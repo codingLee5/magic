@@ -232,7 +232,7 @@ class MagicLLMDomainService
        - 如果一个事件涉及多个引用，合并所有相关引用编号。
        - 不要在 "description" 中添加引用。
     2. **时间处理**：
-       - 事件时间尽量精确到月份（如 "2023-05"），若搜索内容未提供具体月份，但有指出上半年或者下半年，可以使用（“2023 上半年”），若没有则，使用年份（如 "2023"）。
+       - 事件时间尽量精确到月份（如 "2023-05"），若搜索内容未提供具体月份，但有指出上半年或者下半年，可以使用（"2023 上半年"），若没有则，使用年份（如 "2023"）。
        - 若同一事件在多个引用中出现，优先使用最早的时间。
        - 若时间不明确，根据上下文推测最早可能的时间，并确保合理。
     3. **事件提取与筛选**：
@@ -319,42 +319,10 @@ class MagicLLMDomainService
         $this->logger = $this->loggerFactory->get(get_class($this));
     }
 
-    /**
-     * @throws Throwable
-     */
     public function generatePPTFromMindMap(AISearchCommonQueryVo $queryVo, string $mindMap): string
     {
         // 直接用思维导图生成 ppt
         return $mindMap;
-        //        $userMessage = $queryVo->getUserMessage();
-        //        $conversationId = $queryVo->getConversationId();
-        //        $model = $queryVo->getModel();
-        //        $systemPrompt = str_replace(['{mind_map}', '{date_now}'], [$mindMap, date('Y年 m月 d日, H时 i分 s秒')], $this->pptQueryPrompt);
-        //        $this->logger->info(Json::encode([
-        //            'log_title' => 'mindSearch systemPrompt ppt',
-        //        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-        //        // 访问 llm
-        //        try {
-        //            $generatePPTResponse = (string) $this->llmChat(
-        //                $systemPrompt,
-        //                $userMessage,
-        //                $model,
-        //                null,
-        //                null,
-        //                $conversationId,
-        //                $queryVo->getMagicApiBusinessParam()
-        //            );
-        //            // 去掉换行符
-        //            $generatePPTResponse = str_replace('\n', '', $generatePPTResponse);
-        //            $this->logger->info(Json::encode([
-        //                'log_title' => 'mindSearch generatePPTFromMindMap',
-        //                'log_content' => $generatePPTResponse,
-        //            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-        //            return $this->stripMarkdownCodeBlock($generatePPTResponse, 'markdown');
-        //        } catch (Throwable $e) {
-        //            $this->logger->error(sprintf('mindSearch 生成PPT时发生错误:%s,file:%s,line:%s trace:%s, will generate again.', $e->getMessage(), $e->getFile(), $e->getLine(), $e->getTraceAsString()));
-        //            throw $e;
-        //        }
     }
 
     /**
@@ -483,41 +451,12 @@ class MagicLLMDomainService
     }
 
     /**
+     * 流式总结 - 原有方法.
      * @throws Throwable
      */
     public function summarize(AISearchCommonQueryVo $queryVo): Generator
     {
-        $searchContexts = $queryVo->getSearchContexts();
-        $userMessage = $queryVo->getUserMessage();
-        $messageHistory = $queryVo->getMessageHistory();
-        $conversationId = $queryVo->getConversationId();
-        $searchKeywords = $queryVo->getSearchKeywords();
-        $searchKeywords = Json::encode($searchKeywords, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $model = $queryVo->getModel();
-        // 清洗search contexts
-        $searchContextsDetail = '';
-        foreach ($searchContexts as $searchIndex => $context) {
-            $index = $searchIndex + 1;
-            $searchContextsDetail .= sprintf(
-                '[webpage %d begin] 内容发布日期:%s，摘要：%s' . "\n" . '详情内容:%s ' . "[webpage %d end]\n",
-                $index,
-                $context->getDatePublished() ?? '',
-                $context->getSnippet(),
-                $context->getDetail() ?? '',
-                $index
-            );
-        }
-        // 超过最大值则直接截断，避免响应太久
-        $maxLen = self::LLM_STR_MAX_LEN;
-        if (mb_strlen($searchContextsDetail) > $maxLen) {
-            $searchContextsDetail = mb_substr($searchContextsDetail, 0, $maxLen);
-        }
-        // 输入替换
-        $systemPrompt = str_replace(
-            ['{search_context_details}', '{relevant_questions}', '{date_now}', '{question}'],
-            [$searchContextsDetail, $searchKeywords, date('Y年 m月 d日, H时 i分 s秒'), $userMessage],
-            $this->summarizePrompt
-        );
+        $systemPrompt = $this->buildSummarizeSystemPrompt($queryVo);
         $this->logger->info(Json::encode([
             'log_title' => 'mindSearch systemPrompt summarize',
         ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
@@ -526,14 +465,43 @@ class MagicLLMDomainService
         try {
             return $this->llmChatStreamed(
                 $systemPrompt,
-                $userMessage,
-                $model,
-                $messageHistory,
-                $conversationId,
+                $queryVo->getUserMessage(),
+                $queryVo->getModel(),
+                $queryVo->getMessageHistory(),
+                $queryVo->getConversationId(),
                 $queryVo->getMagicApiBusinessParam(),
             );
         } catch (Throwable $e) {
             $this->logger->error(sprintf('mindSearch 解析响应时发生错误:%s,file:%s,line:%s trace:%s, will generate again.', $e->getMessage(), $e->getFile(), $e->getLine(), $e->getTraceAsString()));
+            throw $e;
+        }
+    }
+
+    /**
+     * 非流式总结 - 新增方法，适用于工具调用.
+     * @throws Throwable
+     */
+    public function summarizeNonStreaming(AISearchCommonQueryVo $queryVo): string
+    {
+        $systemPrompt = $this->buildSummarizeSystemPrompt($queryVo);
+        $this->logger->info(Json::encode([
+            'log_title' => 'mindSearch systemPrompt summarizeNonStreaming',
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+
+        // 访问 llm
+        try {
+            $response = $this->llmChat(
+                $systemPrompt,
+                $queryVo->getUserMessage(),
+                $queryVo->getModel(),
+                [],
+                $queryVo->getMessageHistory(),
+                $queryVo->getConversationId(),
+                $queryVo->getMagicApiBusinessParam()
+            );
+            return (string) $response;
+        } catch (Throwable $e) {
+            $this->logger->error(sprintf('mindSearch summarizeNonStreaming 解析响应时发生错误:%s,file:%s,line:%s trace:%s', $e->getMessage(), $e->getFile(), $e->getLine(), $e->getTraceAsString()));
             throw $e;
         }
     }
@@ -1081,6 +1049,44 @@ class MagicLLMDomainService
             'clear_search' => $clearSearch,
             'match_count' => count($clearSearch),
         ];
+    }
+
+    /**
+     * 构建总结系统提示词 - 公共方法，用于复用代码
+     */
+    private function buildSummarizeSystemPrompt(AISearchCommonQueryVo $queryVo): string
+    {
+        $searchContexts = $queryVo->getSearchContexts();
+        $userMessage = $queryVo->getUserMessage();
+        $searchKeywords = $queryVo->getSearchKeywords();
+        $searchKeywords = Json::encode($searchKeywords, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        // 清洗search contexts
+        $searchContextsDetail = '';
+        foreach ($searchContexts as $searchIndex => $context) {
+            $index = $searchIndex + 1;
+            $searchContextsDetail .= sprintf(
+                '[webpage %d begin] 内容发布日期:%s，摘要：%s' . "\n" . '详情内容:%s ' . "[webpage %d end]\n",
+                $index,
+                $context->getDatePublished() ?? '',
+                $context->getSnippet(),
+                $context->getDetail() ?? '',
+                $index
+            );
+        }
+
+        // 超过最大值则直接截断，避免响应太久
+        $maxLen = self::LLM_STR_MAX_LEN;
+        if (mb_strlen($searchContextsDetail) > $maxLen) {
+            $searchContextsDetail = mb_substr($searchContextsDetail, 0, $maxLen);
+        }
+
+        // 输入替换
+        return str_replace(
+            ['{search_context_details}', '{relevant_questions}', '{date_now}', '{question}'],
+            [$searchContextsDetail, $searchKeywords, date('Y年 m月 d日, H时 i分 s秒'), $userMessage],
+            $this->summarizePrompt
+        );
     }
 
     /**

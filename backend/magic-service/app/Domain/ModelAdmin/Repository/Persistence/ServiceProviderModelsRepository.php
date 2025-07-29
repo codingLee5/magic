@@ -45,15 +45,13 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
         $entityArray = $this->prepareEntityForSave($serviceProviderModelsEntity, $isNew);
 
         if ($isNew) {
-            $snowId = IdGenerator::getSnowId();
-            $entityArray['model_parent_id'] = $snowId;
+            $entityArray['model_parent_id'] = 0;
             $this->serviceProviderModelsModel::query()->insert($entityArray);
             $serviceProviderModelsEntity->setId($entityArray['id']);
         } else {
+            $this->removeImmutableFields($entityArray);
             $this->serviceProviderModelsModel::query()->where('id', $serviceProviderModelsEntity->getId())->update($entityArray);
         }
-
-        $this->handleModelsChangeAndDispatch([$serviceProviderModelsEntity]);
 
         return $serviceProviderModelsEntity;
     }
@@ -63,9 +61,8 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
     public function updateModelById(ServiceProviderModelsEntity $entity): void
     {
         $entityArray = $this->prepareEntityForSave($entity);
+        $this->removeImmutableFields($entityArray);
         $this->serviceProviderModelsModel::query()->where('id', $entity->getId())->update($entityArray);
-
-        $this->handleModelsChangeAndDispatch([$entity->getId()]);
     }
 
     // 删除模型
@@ -87,8 +84,6 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
             ->where('id', $modelId)
             ->where('service_provider_config_id', $serviceProviderId)
             ->update(['status' => $status]);
-
-        $this->handleModelsChangeAndDispatch([$modelId]);
     }
 
     public function deleteByModelIdAndOrganizationCode(string $modelId, string $organizationCode): void
@@ -119,7 +114,6 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
             ->where('id', $id)
             ->where('organization_code', $organizationCode)
             ->update(['status' => $status->value]);
-        $this->handleModelsChangeAndDispatch([$id]);
     }
 
     /**
@@ -156,18 +150,21 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
     public function getOrganizationActiveModelsByIdOrType(string $key, ?string $orgCode = null): array
     {
         # 提升索引命中，先根据id查询，再根据model_id查询
-        // 第一次查询：根据id查询
-        $idQuery = $this->serviceProviderModelsModel::query()
-            ->where('id', $key)
-            ->where('status', Status::ACTIVE->value);
+        $resultById = [];
+        if (is_numeric($key)) {
+            // 第一次查询：根据id查询
+            $idQuery = $this->serviceProviderModelsModel::query()
+                ->where('id', $key)
+                ->where('status', Status::ACTIVE->value);
 
-        if ($orgCode) {
-            $idQuery->where('organization_code', $orgCode);
+            if ($orgCode) {
+                $idQuery->where('organization_code', $orgCode);
+            }
+
+            $resultById = Db::select($idQuery->toSql(), $idQuery->getBindings());
         }
 
-        $resultById = Db::select($idQuery->toSql(), $idQuery->getBindings());
-
-        // 第二次查询：根据model_id查询
+        // 第二次查询：根据 model_id 查询
         $modelIdQuery = $this->serviceProviderModelsModel::query()
             ->where('model_id', $key)
             ->where('status', Status::ACTIVE->value);
@@ -239,8 +236,6 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
         }
 
         $this->serviceProviderModelsModel::query()->insert($data);
-
-        $this->handleModelsChangeAndDispatch($serviceProviderModelsEntities);
     }
 
     /**
@@ -270,8 +265,6 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
         }
 
         $this->serviceProviderModelsModel::query()->insert($dataToInsert);
-
-        $this->handleModelsChangeAndDispatch($modelEntities);
     }
 
     /**
@@ -342,7 +335,7 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
         if ($disabledBy !== null) {
             $data['disabled_by'] = $disabledBy->value;
         }
-
+        $this->removeImmutableFields($data);
         $this->serviceProviderModelsModel::query()
             ->where('model_version', $modelVersion)
             ->where('category', ServiceProviderCategory::VLM->value)
@@ -357,7 +350,7 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
         if ($disabledBy !== null) {
             $data['disabled_by'] = $disabledBy->value;
         }
-
+        $this->removeImmutableFields($data);
         $this->serviceProviderModelsModel::query()
             ->where('model_version', $modelVersion)
             ->where('category', ServiceProviderCategory::VLM->value)
@@ -419,12 +412,18 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
         $this->serviceProviderModelsModel::query()->whereIn('model_parent_id', $modelParentIds)->where('is_office', true)->delete();
     }
 
+    public function deleteByModelParentId(array $modelParentIds): void
+    {
+        $this->serviceProviderModelsModel::query()->whereIn('model_parent_id', $modelParentIds)->delete();
+    }
+
     public function updateOfficeModel(int $id, array $entityArray): void
     {
-        unset($entityArray['id'], $entityArray['organization_code'], $entityArray['service_provider_config_id'], $entityArray['status']);
+        $this->removeOfficeImmutableFields($entityArray);
         $entityArray['config'] = Json::encode($entityArray['config'] ?: []);
         $entityArray['translate'] = Json::encode($entityArray['translate'] ?: []);
         $entityArray['visible_organizations'] = Json::encode($entityArray['visible_organizations'] ?: []);
+        $entityArray['visible_applications'] = Json::encode($entityArray['visible_applications'] ?: []);
         $this->serviceProviderModelsModel::query()->where('id', $id)->update($entityArray);
     }
 
@@ -433,6 +432,9 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
         $modelArray = $updateConsumerModel->toArray();
         $modelArray['translate'] = Json::encode($modelArray['translate'] ?: []);
         $modelArray['visible_organizations'] = Json::encode($modelArray['visible_organizations'] ?: []);
+        $modelArray['visible_applications'] = Json::encode($modelArray['visible_applications'] ?: []);
+        $modelArray['super_magic_display_state'] = $modelArray['super_magic_display_state'] ?? 0;
+        $this->removeImmutableFields($modelArray);
         $this->serviceProviderModelsModel::query()->where('model_parent_id', $modelParentId)
             ->update($modelArray);
     }
@@ -453,7 +455,7 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
         } else {
             $data['disabled_by'] = '';
         }
-
+        $this->removeImmutableFields($data);
         $this->serviceProviderModelsModel::query()
             ->where('model_parent_id', $modelId)
             ->update($data);
@@ -473,7 +475,7 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
         if ($disabledBy !== null) {
             $data['disabled_by'] = $disabledBy->value;
         }
-
+        $this->removeImmutableFields($data);
         $this->serviceProviderModelsModel::query()
             ->where('model_parent_id', $modelId)
             ->where('id', '!=', $modelId) // 排除自身ID
@@ -532,6 +534,112 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
     }
 
     /**
+     * find active models by config ids, model version and status.
+     * @param array $configIds provider config ids
+     * @param string $modelVersion model version
+     * @return ServiceProviderModelsEntity[] found active models
+     */
+    public function getActiveModelsByConfigIdsAndModelVersion(array $configIds, string $modelVersion): array
+    {
+        if (empty($configIds) || empty($modelVersion)) {
+            return [];
+        }
+
+        $query = $this->serviceProviderModelsModel::query()
+            ->whereIn('service_provider_config_id', $configIds)
+            ->where('model_version', $modelVersion)
+            ->where('status', Status::ACTIVE->value)
+            ->orderBy('created_at', 'desc'); // order by created at desc
+
+        return $this->executeQueryAndToEntities($query);
+    }
+
+    /**
+     * @return ServiceProviderModelsEntity[]
+     */
+    public function getActiveModelsByConfigIds(array $configIds): array
+    {
+        if (empty($configIds)) {
+            return [];
+        }
+
+        $query = $this->serviceProviderModelsModel::query()
+            ->whereIn('service_provider_config_id', $configIds)
+            ->where('status', Status::ACTIVE->value)
+            ->orderBy('created_at', 'desc'); // 按创建时间倒序排列
+
+        return $this->executeQueryAndToEntities($query);
+    }
+
+    /**
+     * 根据服务商配置IDs、modelId和激活状态查找对应的模型.
+     * @param array $configIds 服务商配置ID数组
+     * @param string $modelVersion 模型ID
+     * @return ServiceProviderModelsEntity[] 找到的激活模型数组
+     */
+    public function getActiveModelsByConfigIdsAndModelId(array $configIds, string $modelVersion): array
+    {
+        if (empty($configIds) || empty($modelVersion)) {
+            return [];
+        }
+
+        $query = $this->serviceProviderModelsModel::query()
+            ->whereIn('service_provider_config_id', $configIds)
+            ->where('model_version', $modelVersion)
+            ->where('status', Status::ACTIVE->value)
+            ->orderBy('created_at', 'desc'); // 按创建时间倒序排列
+
+        return $this->executeQueryAndToEntities($query);
+    }
+
+    /**
+     * Get models with super magic display state enabled for current organization.
+     * @param string $organizationCode Organization code
+     * @return ServiceProviderModelsEntity[]
+     */
+    public function getSuperMagicDisplayModelsForOrganization(string $organizationCode): array
+    {
+        $query = $this->serviceProviderModelsModel::query()
+            ->where('super_magic_display_state', 1)
+            ->where('organization_code', $organizationCode)
+            ->where('status', Status::ACTIVE->value);
+
+        return $this->executeQueryAndToEntities($query);
+    }
+
+    /**
+     * 更新模型的 model_parent_id.
+     */
+    public function updateModelParentId(int $modelId, int $parentId): void
+    {
+        $this->serviceProviderModelsModel::query()
+            ->where('id', $modelId)
+            ->update(['model_parent_id' => $parentId]);
+    }
+
+    /**
+     * Remove immutable fields from entity array.
+     */
+    private function removeImmutableFields(array &$entityArray): void
+    {
+        unset($entityArray['id'], $entityArray['model_parent_id']);
+    }
+
+    /**
+     * Remove immutable fields for office model updates.
+     */
+    private function removeOfficeImmutableFields(array &$entityArray): void
+    {
+        unset(
+            $entityArray['id'],
+            $entityArray['organization_code'],
+            $entityArray['service_provider_config_id'],
+            $entityArray['status'],
+            $entityArray['model_parent_id'],
+        );
+    }
+
+    /**
      * 执行查询并转换为实体数组.
      * @return ServiceProviderModelsEntity[]
      */
@@ -571,12 +679,13 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
         $entityArray['config'] = Json::encode($entity->getConfig() ? $entity->getConfig()->toArray() : []);
         $entityArray['translate'] = Json::encode($entity->getTranslate() ?: []);
         $entityArray['visible_organizations'] = Json::encode($entity->getVisibleOrganizations());
+        $entityArray['visible_applications'] = Json::encode($entity->getVisibleApplications());
 
         return $entityArray;
     }
 
     /**
-     * 先查询再删除并触发事件的通用模式.
+     * 先查询再删除的通用模式.
      */
     #[Transactional]
     private function queryThenDeleteAndDispatch(ModelBuilder|QueryBuilder $query): void
@@ -585,8 +694,6 @@ class ServiceProviderModelsRepository extends AbstractModelRepository
 
         if (! empty($models)) {
             $query->delete();
-
-            $this->handleModelsChangeAndDispatch($models, true);
         }
     }
 }

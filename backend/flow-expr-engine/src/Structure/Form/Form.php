@@ -13,7 +13,6 @@ use Dtyq\FlowExprEngine\Kernel\Utils\AesUtil;
 use Dtyq\FlowExprEngine\Kernel\Utils\Functions;
 use Dtyq\FlowExprEngine\Structure\Expression\ExpressionDataSource\ExpressionDataSourceFields;
 use Dtyq\FlowExprEngine\Structure\Expression\Value;
-use Dtyq\FlowExprEngine\Structure\Expression\ValueType;
 use Dtyq\FlowExprEngine\Structure\Structure;
 use Dtyq\FlowExprEngine\Structure\StructureType;
 
@@ -90,6 +89,21 @@ class Form extends Structure
         $this->description = $description;
         $this->setRequired($required);
         $this->setEncryption($encryption, $encryptionValue);
+    }
+
+    public function __clone()
+    {
+        if ($this->properties !== null) {
+            foreach ($this->properties as $key => $property) {
+                $this->properties[$key] = clone $property;
+            }
+        }
+        if ($this->items !== null) {
+            $this->items = clone $this->items;
+        }
+        if ($this->value !== null) {
+            $this->value = clone $this->value;
+        }
     }
 
     public function isRoot(): bool
@@ -204,11 +218,8 @@ class Form extends Structure
         }
         // 如果是数组要设置value，那么应该检测一下value是否满足条件: 将只允许填写expression并且只有一个fields字段
         if ($this->getType()->isComplex()) {
-            if ($value->getType() !== ValueType::Expression) {
-                throw new FlowExprEngineException("[{$this->key}] 使用表达式来作为数组或对象的值，只允许传入表达式");
-            }
-            if (! $value->expressionIsOnlyFields()) {
-                throw new FlowExprEngineException("[{$this->key}] 使用表达式来作为数组或对象的值，必须以表达式开头");
+            if (! $value->expressionIsOnlyFields() && ! $value->expressionIsOnlyMethod()) {
+                throw new FlowExprEngineException("[{$this->key}] 使用表达式来作为数组或对象的值，必须以表达式或函数开头");
             }
             $this->value = $value;
         }
@@ -286,11 +297,11 @@ class Form extends Structure
         ];
     }
 
-    public function toJsonSchema(): array
+    public function toJsonSchema(bool $throw = false): array
     {
         $properties = null;
         foreach ($this->getProperties() ?? [] as $key => $property) {
-            $properties[$key] = $property->toJsonSchema();
+            $properties[$key] = $property->toJsonSchema($throw);
         }
         $data = [
             'type' => $this->getType()->value,
@@ -300,7 +311,13 @@ class Form extends Structure
             $data['description'] = $this->getDescription();
         }
         if ($this->getType()->isObject()) {
-            $data['properties'] = $properties;
+            if ($throw && empty($properties)) {
+                throw new FlowExprEngineException("[{$this->getKey()}] Object type must have properties");
+            }
+            // Only set properties if we have them or if we're in throw mode
+            if (! empty($properties)) {
+                $data['properties'] = $properties;
+            }
         }
         if ($this->getType()->isArray()) {
             $items = $this->getItems();
@@ -309,10 +326,16 @@ class Form extends Structure
                 $items = $this->getProperties()[0] ?? null;
             }
             // 如果 items 有值，但是是空的对象，那么尝试从 properties 中获取
-            if ($items->getType()->isObject() && empty($items->getProperties())) {
+            if ($items && $items->getType()->isObject() && empty($items->getProperties())) {
                 $items = $this->getProperties()[0] ?? null;
             }
-            $data['items'] = $items?->toJsonSchema();
+            if ($throw && ! $items) {
+                throw new FlowExprEngineException("[{$this->getKey()}] Array type must have items");
+            }
+            // Only set items if we have them or if we're in throw mode
+            if ($items) {
+                $data['items'] = $items->toJsonSchema($throw);
+            }
         }
 
         return $data;
@@ -471,20 +494,30 @@ class Form extends Structure
 
             if ($this->getItems()->getType()->isComplex()) {
                 $count = count($input);
-                $properties = null;
+                $properties = [];
                 for ($i = 0; $i < $count; ++$i) {
-                    $items = clone $this->getItems();
+                    // Use existing property if available, otherwise clone items
+                    $existingProperty = $this->getProperties()[$i] ?? null;
+                    if ($existingProperty) {
+                        $items = $existingProperty;
+                    } else {
+                        $items = clone $this->getItems();
+                        $items->setKey((string) $i);
+                        $items->setSort($i);
+                    }
                     $items->appendConstValue($input[$i] ?? []);
-                    $properties[] = $items;
+                    $properties[$i] = $items;
                 }
             } else {
-                $properties = null;
+                $properties = [];
                 $index = 0;
                 foreach ($input as $item) {
                     $property = clone $this->getItems();
+                    $property->setKey((string) $index);
                     $property->setValue(Value::buildConst($item));
-                    $property->setSort($index++);
-                    $properties[] = $property;
+                    $property->setSort($index);
+                    $properties[$index] = $property;
+                    ++$index;
                 }
             }
             $this->setProperties($properties);

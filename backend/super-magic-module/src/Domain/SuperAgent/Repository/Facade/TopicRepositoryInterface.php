@@ -17,6 +17,8 @@ interface TopicRepositoryInterface
      */
     public function getTopicById(int $id): ?TopicEntity;
 
+    public function getTopicBySandboxId(string $sandboxId): ?TopicEntity;
+
     /**
      * 根据条件获取话题列表.
      * 支持过滤、分页和排序.
@@ -49,6 +51,13 @@ interface TopicRepositoryInterface
     public function updateTopic(TopicEntity $topicEntity): bool;
 
     /**
+     * 使用updated_at 作为乐观锁更新话题.
+     */
+    public function updateTopicWithUpdatedAt(TopicEntity $topicEntity, string $updatedAt): bool;
+
+    public function updateTopicByCondition(array $condition, array $data): bool;
+
+    /**
      * 删除话题.
      */
     public function deleteTopic(int $id): bool;
@@ -69,7 +78,9 @@ interface TopicRepositoryInterface
      */
     public function getTopicStatusMetrics(array $conditions = []): array;
 
-    public function updateTopicStatus(int $id, $taskId, TaskStatus $status): bool;
+    public function updateTopicStatus(int $id, $taskId, string $sandboxId, TaskStatus $status): bool;
+
+    public function updateTopicStatusAndSandboxId(int $id, $taskId, TaskStatus $status, string $sandboxId): bool;
 
     /**
      * 获取最近更新时间超过指定时间的话题列表.
@@ -79,4 +90,20 @@ interface TopicRepositoryInterface
      * @return array<TopicEntity> 话题实体列表
      */
     public function getTopicsExceedingUpdateTime(string $timeThreshold, int $limit = 100): array;
+
+    /**
+     * 根据项目ID获取话题列表.
+     */
+    public function getTopicsByProjectId(int $projectId, string $userId): array;
+
+    public function updateTopicStatusBySandboxIds(array $sandboxIds, string $status);
+
+    /**
+     * 统计项目下的话题数量.
+     */
+    public function countTopicsByProjectId(int $projectId): int;
+
+    public function getRunningWorkspaceIds(array $workspaceIds): array;
+
+    public function getRunningProjectIds(array $projectIds): array;
 }

@@ -7,9 +7,11 @@ declare(strict_types=1);
 
 namespace App\Application\ModelAdmin\Service;
 
+use App\Application\ModelGateway\Mapper\ModelFilter;
 use App\Application\ModelGateway\Service\LLMAppService;
 use App\Domain\File\Service\FileDomainService;
 use App\Domain\ModelAdmin\Constant\ModelType;
+use App\Domain\ModelAdmin\Constant\NaturalLanguageProcessing;
 use App\Domain\ModelAdmin\Constant\ServiceProviderCategory;
 use App\Domain\ModelAdmin\Constant\ServiceProviderCode;
 use App\Domain\ModelAdmin\Constant\ServiceProviderType;
@@ -21,6 +23,7 @@ use App\Domain\ModelAdmin\Entity\ServiceProviderOriginalModelsEntity;
 use App\Domain\ModelAdmin\Entity\ValueObject\ServiceProviderConfigDTO;
 use App\Domain\ModelAdmin\Entity\ValueObject\ServiceProviderDTO;
 use App\Domain\ModelAdmin\Entity\ValueObject\ServiceProviderModelsDTO;
+use App\Domain\ModelAdmin\Entity\ValueObject\SuperMagicModelsDTO;
 use App\Domain\ModelAdmin\Service\Provider\ConnectResponse;
 use App\Domain\ModelAdmin\Service\ServiceProviderDomainService;
 use App\Domain\ModelGateway\Entity\Dto\CompletionDTO;
@@ -55,7 +58,12 @@ class ServiceProviderAppService
         $serviceProviderConfigDTOS = $this->serviceProviderDomainService->getServiceProviderConfigs($organizationCode, $serviceProviderCategory);
         // 如果获取的服务商列表为空，则初始化该类别的服务商
         if (empty($serviceProviderConfigDTOS)) {
-            $serviceProviderConfigDTOS = $this->serviceProviderDomainService->initOrganizationServiceProviders($organizationCode, $serviceProviderCategory);
+            $this->serviceProviderDomainService->initOrganizationServiceProviders($organizationCode, $serviceProviderCategory);
+            $serviceProviderConfigDTOS = $this->serviceProviderDomainService->getServiceProviderConfigs($organizationCode, $serviceProviderCategory);
+        }
+
+        foreach ($serviceProviderConfigDTOS as $serviceProviderConfigDTO) {
+            $this->maskSensitiveConfigInfo($serviceProviderConfigDTO);
         }
 
         // 处理图标
@@ -64,7 +72,7 @@ class ServiceProviderAppService
         $officeOrganization = config('service_provider.office_organization');
         if ($authenticatable->getOrganizationCode() === $officeOrganization) {
             $serviceProviderConfigDTOS = array_filter($serviceProviderConfigDTOS, function ($serviceProviderConfigDTO) {
-                return ServiceProviderCode::from($serviceProviderConfigDTO->getProviderCode()) !== ServiceProviderCode::Official;
+                return ServiceProviderCode::from($serviceProviderConfigDTO->getProviderCode()) !== ServiceProviderCode::Magic;
             });
             $serviceProviderConfigDTOS = array_values($serviceProviderConfigDTOS);
         }
@@ -117,6 +125,11 @@ class ServiceProviderAppService
     // 保存模型
     public function saveModelToServiceProvider(ServiceProviderModelsEntity $serviceProviderModelsEntity): ServiceProviderModelsDTO
     {
+        $officialOrganization = config('service_provider.office_organization');
+        if ($serviceProviderModelsEntity->getOrganizationCode() !== $officialOrganization) {
+            $serviceProviderModelsEntity->setSuperMagicDisplayState(0);
+        }
+
         $serviceProviderModelsEntity = $this->serviceProviderDomainService->saveModelsToServiceProvider($serviceProviderModelsEntity);
         $serviceProviderModelsDTO = new ServiceProviderModelsDTO($serviceProviderModelsEntity->toArray());
 
@@ -146,8 +159,8 @@ class ServiceProviderAppService
 
         // 根据服务商类型和模型类型进行连通性测试
         return match ($this->getConnectivityTestType($serviceProviderConfigDTO->getCategory(), $model->getModelType())) {
-            'embedding' => $this->embeddingConnectivityTest($modelId, $authorization),
-            'llm' => $this->llmConnectivityTest($modelId, $authorization),
+            NaturalLanguageProcessing::EMBEDDING => $this->embeddingConnectivityTest($modelId, $authorization),
+            NaturalLanguageProcessing::LLM => $this->llmConnectivityTest($modelId, $authorization),
             default => $this->serviceProviderDomainService->connectivityTest($serviceProviderConfigId, $modelVersion, $authorization->getOrganizationCode()),
         };
     }
@@ -242,14 +255,42 @@ class ServiceProviderAppService
     }
 
     /**
+     * Get super magic display models and Magic provider models visible to current organization.
+     * @param string $organizationCode Organization code
+     * @return SuperMagicModelsDTO[]
+     */
+    public function getSuperMagicDisplayModelsForOrganization(string $organizationCode): array
+    {
+        $models = $this->serviceProviderDomainService->getSuperMagicDisplayModelsForOrganization($organizationCode);
+
+        $icons = array_column($models, 'icon');
+
+        $iconUrlMap = $this->fileDomainService->getLinks($organizationCode, array_unique($icons));
+
+        $modelDTOs = [];
+        foreach ($models as $model) {
+            $modelConfig = $model->getConfig();
+            if ($modelConfig->isSupportFunction() && $modelConfig->isSupportMultiModal()) {
+                $modelDTO = new SuperMagicModelsDTO($model->toArray());
+                if (isset($iconUrlMap[$modelDTO->getIcon()])) {
+                    $modelDTO->setIcon($iconUrlMap[$modelDTO->getIcon()]->getUrl());
+                }
+                $modelDTOs[] = $modelDTO;
+            }
+        }
+
+        return $modelDTOs;
+    }
+
+    /**
      * 获取联通测试类型.
      */
-    private function getConnectivityTestType(string $category, int $modelType): string
+    private function getConnectivityTestType(string $category, int $modelType)
     {
         if (ServiceProviderCategory::from($category) === ServiceProviderCategory::LLM) {
-            return $modelType === ModelType::EMBEDDING->value ? 'embedding' : 'llm';
+            return $modelType === ModelType::EMBEDDING->value ? NaturalLanguageProcessing::EMBEDDING : NaturalLanguageProcessing::LLM;
         }
-        return 'default';
+        return NaturalLanguageProcessing::DEFAULT;
     }
 
     private function embeddingConnectivityTest(string $modelId, MagicUserAuthorization $authorization): ConnectResponse
@@ -268,7 +309,8 @@ class ServiceProviderAppService
             'source_id' => 'connectivity_test',
         ]);
         try {
-            $llmAppService->embeddings($proxyModelRequest);
+            $modelFilter = new ModelFilter(checkModelEnabled: false, checkProviderEnabled: false, checkVisibleOrganization: false, checkVisibleApplication: false);
+            $llmAppService->embeddings($proxyModelRequest, $modelFilter);
         } catch (Exception $exception) {
             $connectResponse->setStatus(false);
             $connectResponse->setMessage($exception->getMessage());
@@ -295,7 +337,8 @@ class ServiceProviderAppService
         ]);
         /* @var ChatCompletionResponse $response */
         try {
-            $llmAppService->chatCompletion($completionDTO);
+            $modelFilter = new ModelFilter(checkModelEnabled: false, checkProviderEnabled: false, checkVisibleOrganization: false, checkVisibleApplication: false);
+            $llmAppService->chatCompletion($completionDTO, $modelFilter);
         } catch (Exception $exception) {
             $connectResponse->setStatus(false);
             $connectResponse->setMessage($exception->getMessage());

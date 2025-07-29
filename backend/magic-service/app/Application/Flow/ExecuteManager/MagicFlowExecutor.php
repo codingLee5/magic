@@ -65,6 +65,8 @@ class MagicFlowExecutor
 
     private LockerInterface $locker;
 
+    private bool $inLoop = false;
+
     public function __construct(
         private readonly MagicFlowEntity $magicFlowEntity,
         private readonly ExecutionData $executionData,
@@ -78,6 +80,11 @@ class MagicFlowExecutor
         $this->logger = ApplicationContext::getContainer()->get(LoggerFactory::class)->get('MagicFlowExecutor');
         $this->magicFlowExecuteLogDomainService = di(MagicFlowExecuteLogDomainService::class);
         $this->init();
+    }
+
+    public function setInLoop(bool $inLoop): void
+    {
+        $this->inLoop = $inLoop;
     }
 
     public function execute(?TriggerType $appointTriggerType = null): array
@@ -102,7 +109,9 @@ class MagicFlowExecutor
         try {
             $this->begin($args);
             if ($this->magicFlowEntity->hasCallback()) {
-                return $this->executeCallback();
+                $result = $this->executeCallback();
+                $this->magicFlowEntity->setCallbackResult($result);
+                return $result;
             }
             return $this->dag->run($args);
         } finally {
@@ -502,7 +511,7 @@ class MagicFlowExecutor
             return;
         }
         // 只有第一层的流程才会进行归档
-        if (! $this->executionData->isTop()) {
+        if (! $this->executionData->isTop() || $this->inLoop) {
             return;
         }
         if (isset($this->magicFlowExecuteLogEntity)) {
@@ -511,13 +520,13 @@ class MagicFlowExecutor
                 CoContext::copy($fromCoroutineId);
 
                 // 利用自旋锁来控制只有一个在保存
-                if (! $this->locker->spinLock($this->getLockerKey() . ':archive', $this->executorId, 20)) {
+                if (! $this->locker->spinLock($this->getLockerKey() . ':archive', $this->magicFlowExecuteLogEntity->getExecuteDataId(), 20)) {
                     ExceptionBuilder::throw(FlowErrorCode::ExecuteFailed, 'archive file failed');
                 }
 
                 FlowExecutorArchiveCloud::put(
                     organizationCode: $this->executionData->getDataIsolation()->getCurrentOrganizationCode(),
-                    key: (string) $this->magicFlowExecuteLogEntity->getId(),
+                    key: $this->magicFlowExecuteLogEntity->getExecuteDataId(),
                     data: [
                         'execution_data' => $this->executionData,
                         'magic_flow' => $this->magicFlowEntity,

@@ -29,6 +29,24 @@ class MCPServerFactory
         $entity->setModifier($model->modifier);
         $entity->setUpdatedAt($model->updated_at);
 
+        // Handle service_config field with backward compatibility for external_sse_url
+        $serviceType = ServiceType::from($model->type);
+        $serviceConfigData = [];
+
+        if ($model->service_config) {
+            // If service_config exists, use it directly
+            $entity->setServiceConfig($serviceType->createServiceConfig($model->service_config));
+        } else {
+            // For backward compatibility, create service_config from external_sse_url if exists
+            if (! empty($model->external_sse_url)
+                && ($serviceType === ServiceType::ExternalSSE || $serviceType === ServiceType::ExternalStreamableHttp)) {
+                $serviceConfigData['url'] = $model->external_sse_url;
+            }
+
+            // Always create a serviceConfig, even if it's empty
+            $entity->setServiceConfig($serviceType->createServiceConfig($serviceConfigData));
+        }
+
         return $entity;
     }
 }

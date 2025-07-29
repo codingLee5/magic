@@ -48,9 +48,13 @@ class ServiceProviderModelsEntity extends AbstractEntity
 
     protected array $visibleOrganizations = [];
 
+    protected array $visibleApplications = [];
+
     protected int $status = Status::ACTIVE->value; // 状态
 
     protected int $isOffice = 0; // 是否为官方模型：0-否，1-是
+
+    protected int $superMagicDisplayState = 0;
 
     protected ?string $disabledBy = ''; // 禁用来源：official-官方禁用，user-用户禁用，NULL-未禁用
 
@@ -139,6 +143,16 @@ class ServiceProviderModelsEntity extends AbstractEntity
     public function setIsOffice(bool|int $isOffice): void
     {
         $this->isOffice = (int) $isOffice;
+    }
+
+    public function getSuperMagicDisplayState(): int
+    {
+        return $this->superMagicDisplayState;
+    }
+
+    public function setSuperMagicDisplayState(bool|int $superMagicDisplayState): void
+    {
+        $this->superMagicDisplayState = (int) $superMagicDisplayState;
     }
 
     public function getId(): ?int
@@ -327,6 +341,22 @@ class ServiceProviderModelsEntity extends AbstractEntity
             $visibleOrganizations = [];
         }
         $this->visibleOrganizations = $visibleOrganizations;
+    }
+
+    public function getVisibleApplications(): array
+    {
+        return $this->visibleApplications;
+    }
+
+    public function setVisibleApplications(null|array|string $visibleApplications): void
+    {
+        if (is_string($visibleApplications)) {
+            $visibleApplications = Json::decode($visibleApplications);
+        }
+        if (is_null($visibleApplications)) {
+            $visibleApplications = [];
+        }
+        $this->visibleApplications = $visibleApplications;
     }
 
     public function setModelParentId(int $modelParentId): void

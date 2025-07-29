@@ -9,15 +9,17 @@ class ConversationDbServices {
 	/**
 	 * 从数据库加载会话
 	 * @param organizationCode 组织编码
+	 * @param userId 用户ID
 	 * @returns 会话列表
 	 */
-	loadNormalConversationsFromDB(organizationCode: string) {
+	loadNormalConversationsFromDB(organizationCode: string, userId: string) {
 		return chatDb
 			.getConversationTable()
 			?.where({
 				user_organization_code: organizationCode,
 				receive_organization_code: organizationCode,
 				status: ConversationStatus.Normal,
+				user_id: userId,
 			})
 			.toArray()
 	}

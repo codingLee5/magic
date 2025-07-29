@@ -19,7 +19,9 @@ export const enum RequestUrl {
 	/** 修改手机号 */
 	changePhone = "/v4/users/phone",
 	/** 登录 */
-	Login = "/v4/user/login",
+	Login = "/api/v1/sessions",
+	/** 登出 */
+	Logout = "/v4/users/logout",
 	/** 第三方登录 */
 	thirdPartyLogins = "/v4/user/fast_login",
 
@@ -229,6 +231,22 @@ export const enum RequestUrl {
 	deleteTool = "/api/v1/flows/tool-set/${id}",
 	/** 获取可用的工具列表 */
 	getAvailableTools = "/api/v1/flows/queries/tools",
+	/** 创建 / 更新 MCP  */
+	saveMcp = "/api/v1/mcp/server",
+	/** 获取 MCP 列表 */
+	getMcpList = "/api/v1/mcp/server/queries",
+	/** 获取 MCP 详情 */
+	getMcp = "/api/v1/mcp/server/${id}",
+	/** 删除 MCP */
+	deleteMcp = "/api/v1/mcp/server/${id}",
+	/** 获取 MCP 的工具列表 */
+	getMcpToolList = "/api/v1/mcp/server/${code}/tools",
+	/** 保存 MCP 的工具 */
+	saveMcpTool = "/api/v1/mcp/server/${code}/tool",
+	/** 删除 MCP 的工具 */
+	deleteMcpTool = "/api/v1/mcp/server/${code}/tool/${id}",
+	/** 获取 MCP 的工具详情 */
+	getMcpToolDetail = "/api/v1/mcp/server/${code}/tool/${id}",
 	/** 获取函数表达式数据源 */
 	getMethodsDataSource = "/api/v1/flows/expression-data-source",
 	/** 获取可用的知识库列表 */
@@ -318,6 +336,17 @@ export const enum RequestUrl {
 	/** 重建 api-key */
 	rebuildApiKey = "/api/v1/flows/${flowId}/api-key/${id}/rebuild",
 
+	/** 保存 api-key v1 */
+	saveApiKeyV1 = "/api/v1/authentication/api-key",
+	/** 查询 api-key v1 */
+	getApiKeyListV1 = "/api/v1/authentication/api-key/queries",
+	/** 查询 api-key v1 详情 */
+	getApiKeyDetailV1 = "/api/v1/authentication/api-key/${code}",
+	/** 删除 api-key v1 */
+	deleteApiKeyV1 = "/api/v1/authentication/api-key/${code}",
+	/** 重建 api-key v1 */
+	rebuildApiKeyV1 = "/api/v1/authentication/api-key/${code}/rebuild",
+
 	/** 获取话题列表 */
 	getTopicList = "/api/v1/im/conversations/${conversationId}/topics/queries",
 	/** 获取话题消息 */
@@ -325,14 +354,12 @@ export const enum RequestUrl {
 	/** 话题智能重命名 */
 	getMagicTopicName = "/api/v1/im/conversations/${conversationId}/topics/${topicId}/name",
 
-	
 	/** 获取文件 */
 	getFiles = "/api/v1/teamshare/multi-table/file/queries",
 	/** 获取数据表 */
 	getSheets = "/api/v1/teamshare/multi-table/${fileId}/sheets",
 	/** 获取文件详情 */
 	getFile = "/api/v1/teamshare/multi-table/${fileId}",
-    
 
 	/** Auth */
 	/** 更新资源授权 */

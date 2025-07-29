@@ -41,7 +41,19 @@ class MCPServerDTO extends AbstractDTO
      */
     public ?bool $enabled = null;
 
+    /**
+     * External SSE service URL.
+     */
+    public string $externalSseUrl = '';
+
+    /**
+     * Service configuration.
+     */
+    public ?array $serviceConfig = null;
+
     public int $userOperation = 0;
+
+    public int $toolsCount = 0;
 
     public function getName(): string
     {
@@ -93,6 +105,26 @@ class MCPServerDTO extends AbstractDTO
         $this->enabled = $enabled;
     }
 
+    public function getExternalSseUrl(): string
+    {
+        return $this->externalSseUrl;
+    }
+
+    public function setExternalSseUrl(?string $externalSseUrl): void
+    {
+        $this->externalSseUrl = $externalSseUrl ?? '';
+    }
+
+    public function getServiceConfig(): ?array
+    {
+        return $this->serviceConfig;
+    }
+
+    public function setServiceConfig(?array $serviceConfig): void
+    {
+        $this->serviceConfig = $serviceConfig;
+    }
+
     public function getUserOperation(): int
     {
         return $this->userOperation;
@@ -101,5 +133,15 @@ class MCPServerDTO extends AbstractDTO
     public function setUserOperation(?int $userOperation): void
     {
         $this->userOperation = $userOperation ?? 0;
+    }
+
+    public function getToolsCount(): int
+    {
+        return $this->toolsCount;
+    }
+
+    public function setToolsCount(int $toolsCount): void
+    {
+        $this->toolsCount = $toolsCount;
     }
 }

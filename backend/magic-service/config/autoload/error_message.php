@@ -8,6 +8,7 @@ use App\ErrorCode\AgentErrorCode;
 use App\ErrorCode\AsrErrorCode;
 use App\ErrorCode\AuthenticationErrorCode;
 use App\ErrorCode\ChatErrorCode;
+use App\ErrorCode\EventErrorCode;
 use App\ErrorCode\FlowErrorCode;
 use App\ErrorCode\GenericErrorCode;
 use App\ErrorCode\HttpErrorCode;
@@ -17,8 +18,6 @@ use App\ErrorCode\MagicApiErrorCode;
 use App\ErrorCode\MCPErrorCode;
 use App\ErrorCode\PermissionErrorCode;
 use App\ErrorCode\ServiceProviderErrorCode;
-use App\ErrorCode\ShareErrorCode;
-use App\ErrorCode\SuperAgentErrorCode;
 use App\ErrorCode\TokenErrorCode;
 use App\ErrorCode\UserErrorCode;
 use App\ErrorCode\UserTaskErrorCode;
@@ -33,6 +32,7 @@ return [
         MagicApiErrorCode::class => [4000, 4100],
         MagicAccountErrorCode::class => [4100, 4300],
         GenericErrorCode::class => [5000, 9000],
+        EventErrorCode::class => [6000, 6999],
         TokenErrorCode::class => [9000, 10000],
         FlowErrorCode::class => [31000, 31999],
         AgentErrorCode::class => [32000, 32999],
@@ -42,8 +42,6 @@ return [
         AsrErrorCode::class => [43000, 43999],
         UserTaskErrorCode::class => [8000, 8999],
         ServiceProviderErrorCode::class => [44000, 44999],
-        SuperAgentErrorCode::class => [51000, 51200],
-        ShareErrorCode::class => [51300, 51400],
         MCPErrorCode::class => [51500, 51599],
     ],
 ];

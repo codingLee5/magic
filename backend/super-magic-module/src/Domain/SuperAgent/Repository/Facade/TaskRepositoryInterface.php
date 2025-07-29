@@ -122,4 +122,21 @@ interface TaskRepositoryInterface
      * @return array<TaskEntity> 任务实体列表
      */
     public function getTasksExceedingUpdateTime(string $timeThreshold, int $limit = 100): array;
+
+    /**
+     * 获取指定话题下的任务数量.
+     */
+    public function getTaskCountByTopicId(int $topicId): int;
+
+    /**
+     * 根据项目ID获取任务列表.
+     */
+    public function getTasksByProjectId(int $projectId, string $userId): array;
+
+    public function updateTaskStatusBySandboxIds(array $sandboxIds, string $status, string $errMsg = ''): int;
+
+    /**
+     * 统计项目下的任务数量.
+     */
+    public function countTasksByProjectId(int $projectId): int;
 }

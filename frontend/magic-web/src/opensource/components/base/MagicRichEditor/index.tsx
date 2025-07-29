@@ -191,6 +191,8 @@ interface MagicRichEditorProps extends Omit<HTMLAttributes<HTMLDivElement>, "con
 	editorProps?: UseEditorOptions
 	/** 回车键回调 */
 	onEnter?: (editor: Editor) => void
+	/** 粘贴失败回调 */
+	onPasteFileFail?: (error: FileError[]) => void
 	/** 是否移除回车键默认行为 */
 	enterBreak?: boolean
 	contentProps?: HTMLAttributes<HTMLDivElement>
@@ -209,6 +211,7 @@ const MagicRichEditor = memo(
 			editorProps,
 			enterBreak = false,
 			contentProps,
+			onPasteFileFail,
 			...otherProps
 		} = props
 		const { styles } = useStyles()
@@ -261,52 +264,28 @@ const MagicRichEditor = memo(
 			}
 		}, [])
 
-		// 使用 useCallback 优化 onValidationError 回调函数
-		const handleValidationError = useCallback(
-			(errors: FileError[]) => {
-				errors.forEach((validationError: FileError) => {
-					switch (validationError.reason) {
-						case "size":
-							message.error(t("richEditor.fileTooLarge"))
-							break
-						case "invalidBase64":
-							message.error(t("richEditor.invalidBase64"))
-							break
-						default:
-							message.error(t("richEditor.uploadFailed"))
-					}
-				})
-			},
-			[t],
-		)
-
 		const extensions = useMemo(() => {
 			const list = [
 				// 自定义历史管理，取代StarterKit内置的history
 				CustomHistory,
 				// 在测试环境中跳过extend方法的调用
-				process.env.NODE_ENV === "test"
-					? StarterKit.configure({
-							blockquote: false,
-							codeBlock: false,
-							hardBreak: false,
-							// 禁用StarterKit内置的history，使用我们的自定义history
-							history: false,
-					  })
-					: StarterKit.configure({
-							blockquote: false,
-							codeBlock: false,
-							hardBreak: false,
-							// 禁用StarterKit内置的history，使用我们的自定义history
-							history: false,
-					  }).extend({
-							addKeyboardShortcuts() {
-								return {
-									// 移除回车键默认行为
-									Enter: () => enterBreak,
-								}
-							},
-					  }),
+				StarterKit.configure({
+					blockquote: false,
+					codeBlock: false,
+					orderedList: false,
+					bulletList: false,
+					code: false,
+					hardBreak: false,
+					// 禁用StarterKit内置的history，使用我们的自定义history
+					history: false,
+				}).extend({
+					addKeyboardShortcuts() {
+						return {
+							// 移除回车键默认行为
+							Enter: () => enterBreak,
+						}
+					},
+				}),
 				FontSize,
 				Highlight,
 				TextAlign,
@@ -316,13 +295,13 @@ const MagicRichEditor = memo(
 					allowedMimeTypes: ["image/*"],
 					maxFileSize: 15 * 1024 * 1024,
 					onImageRemoved: handleImageRemoved,
-					onValidationError: handleValidationError,
+					onValidationError: onPasteFileFail,
 				}),
 				FileHandler.configure({
 					allowedMimeTypes: ["image/*"],
 					maxFileSize: 15 * 1024 * 1024,
 					onPaste: handlePaste,
-					onValidationError: handleValidationError,
+					onValidationError: onPasteFileFail,
 				}),
 				// MentionExtension.configure({
 				// 	HTMLAttributes: {
@@ -340,7 +319,7 @@ const MagicRichEditor = memo(
 				HardBlockExtension,
 			]
 			return list
-		}, [enterBreak, handleImageRemoved, handlePaste, handleValidationError, styles.emoji])
+		}, [enterBreak, handleImageRemoved, handlePaste, onPasteFileFail, styles.emoji])
 
 		const pasteSize = useRef<{
 			originalPosition: number

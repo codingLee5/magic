@@ -10,11 +10,14 @@ namespace App\Application\ModelGateway\Mapper;
 use App\Domain\Flow\Entity\ValueObject\FlowDataIsolation;
 use App\Domain\Flow\Entity\ValueObject\Query\MagicFlowAIModelQuery;
 use App\Domain\Flow\Service\MagicFlowAIModelDomainService;
+use App\Domain\ModelAdmin\Constant\ServiceProviderCategory;
+use App\Domain\ModelAdmin\Service\ServiceProviderDomainService;
 use App\Domain\ModelGateway\Service\ModelConfigDomainService;
 use App\Domain\Provider\Entity\ProviderConfigEntity;
 use App\Domain\Provider\Entity\ProviderEntity;
 use App\Domain\Provider\Entity\ProviderModelEntity;
 use App\Domain\Provider\Entity\ValueObject\Category;
+use App\Domain\Provider\Entity\ValueObject\ModelType;
 use App\Domain\Provider\Entity\ValueObject\ProviderDataIsolation;
 use App\Domain\Provider\Entity\ValueObject\Query\ProviderModelQuery;
 use App\Domain\Provider\Entity\ValueObject\Status;
@@ -22,6 +25,7 @@ use App\Domain\Provider\Service\ProviderConfigDomainService;
 use App\Domain\Provider\Service\ProviderDomainService;
 use App\Domain\Provider\Service\ProviderModelDomainService;
 use App\Infrastructure\Core\Contract\Model\RerankInterface;
+use App\Infrastructure\Core\Model\ImageGenerationModel;
 use App\Infrastructure\Core\ValueObject\Page;
 use App\Infrastructure\ExternalAPI\MagicAIApi\MagicAILocalModel;
 use DateTime;
@@ -61,8 +65,8 @@ class ModelGatewayMapper extends ModelMapper
 
         // 这里具有优先级的顺序来覆盖配置,后续统一迁移到管理后台
         $this->loadEnvModels();
-        $this->loadFlowModels();
-        $this->loadApiModels();
+        //        $this->loadFlowModels();
+        //        $this->loadApiModels();
     }
 
     public function exists(string $model, ?string $orgCode = null): bool
@@ -79,9 +83,13 @@ class ModelGatewayMapper extends ModelMapper
      */
     public function getChatModelProxy(string $model, ?string $orgCode = null): MagicAILocalModel
     {
-        /** @var AbstractModel $odinModel */
         $odinModel = $this->getOrganizationChatModel($model, $orgCode);
-        // 转换为代理
+        if ($odinModel instanceof OdinModel) {
+            $odinModel = $odinModel->getModel();
+        }
+        if (! $odinModel instanceof AbstractModel) {
+            throw new InvalidArgumentException(sprintf('Model %s is not a valid Odin model.', $model));
+        }
         return $this->createProxy($model, $odinModel->getModelOptions(), $odinModel->getApiRequestOptions());
     }
 
@@ -102,14 +110,12 @@ class ModelGatewayMapper extends ModelMapper
      * 仅 ModelGateway 领域使用.
      * @param string $model 预期是管理后台的 model_id，过度阶段接受传入 model_version
      */
-    public function getOrganizationChatModel(string $model, ?string $orgCode = null): ModelInterface
+    public function getOrganizationChatModel(string $model, ?string $orgCode = null, ?ModelFilter $filter = null): ModelInterface|OdinModel
     {
-        // 优先从管理后台获取模型配置
-        $odinModel = $this->getByAdmin($model, $orgCode);
+        $odinModel = $this->getByAdmin($model, $orgCode, $filter);
         if ($odinModel) {
-            return $odinModel->getModel();
+            return $odinModel;
         }
-        // 最后一次尝试，从被预加载的模型中获取。注意，被预加载的模型是即将被废弃，后续需要迁移到管理后台
         return $this->getChatModel($model);
     }
 
@@ -118,9 +124,9 @@ class ModelGatewayMapper extends ModelMapper
      * 仅 ModelGateway 领域使用.
      * @param string $model 模型名称 预期是管理后台的 model_id，过度阶段接受 model_version
      */
-    public function getOrganizationEmbeddingModel(string $model, ?string $orgCode = null): EmbeddingInterface
+    public function getOrganizationEmbeddingModel(string $model, ?string $orgCode = null, ?ModelFilter $filter = null): EmbeddingInterface
     {
-        $odinModel = $this->getByAdmin($model, $orgCode);
+        $odinModel = $this->getByAdmin($model, $orgCode, $filter);
         if ($odinModel) {
             return $odinModel->getModel();
         }
@@ -131,18 +137,59 @@ class ModelGatewayMapper extends ModelMapper
      * 获取当前组织下的所有可用 chat 模型.
      * @return OdinModel[]
      */
-    public function getChatModels(string $organizationCode): array
+    public function getChatModels(string $organizationCode, ?ModelFilter $filter = null): array
     {
-        return $this->getModelsByType($organizationCode, 'chat');
+        return $this->getModelsByType($organizationCode, 'chat', ModelType::LLM, $filter);
     }
 
     /**
      * 获取当前组织下的所有可用 embedding 模型.
      * @return OdinModel[]
      */
-    public function getEmbeddingModels(string $organizationCode): array
+    public function getEmbeddingModels(string $organizationCode, ?ModelFilter $filter = null): array
     {
-        return $this->getModelsByType($organizationCode, 'embedding');
+        return $this->getModelsByType($organizationCode, 'embedding', ModelType::EMBEDDING, $filter);
+    }
+
+    /**
+     * get all available image models under the current organization.
+     * @return OdinModel[]
+     */
+    public function getImageModels(string $organizationCode = ''): array
+    {
+        $serviceProviderDomainService = di(ServiceProviderDomainService::class);
+        $officeModels = $serviceProviderDomainService->getOfficeModels(ServiceProviderCategory::VLM);
+
+        $odinModels = [];
+        foreach ($officeModels as $model) {
+            $key = $model->getModelVersion();
+
+            // Create virtual image generation model
+            $imageModel = new ImageGenerationModel(
+                $model->getModelVersion(),
+                [], // Empty config array
+                $this->logger
+            );
+
+            // Create model attributes
+            $attributes = new OdinModelAttributes(
+                key: $key,
+                name: $model->getModelVersion(),
+                label: $model->getName() ?: 'Image Generation',
+                icon: $model->getIcon() ?: '',
+                tags: [['type' => 1, 'value' => 'Image Generation']],
+                createdAt: new DateTime($model->getCreatedAt()),
+                owner: 'MagicAI',
+                providerAlias: '',
+                providerModelId: (string) $model->getId()
+            );
+
+            // Create OdinModel
+            $odinModel = new OdinModel($key, $imageModel, $attributes);
+            $odinModels[$key] = $odinModel;
+        }
+
+        return $odinModels;
     }
 
     protected function loadEnvModels(): void
@@ -327,13 +374,28 @@ class ModelGatewayMapper extends ModelMapper
      * @param string $type 模型类型(chat|embedding)
      * @return OdinModel[]
      */
-    private function getModelsByType(string $organizationCode, string $type): array
+    private function getModelsByType(string $organizationCode, string $type, ?ModelType $modelType = null, ?ModelFilter $filter = null): array
     {
         $list = [];
 
         // 获取已持久化的配置
         $models = $this->getModels($type);
         foreach ($models as $name => $model) {
+            switch ($modelType) {
+                case ModelType::LLM:
+                    if ($model instanceof AbstractModel && ! $model->getModelOptions()->isChat()) {
+                        continue 2;
+                    }
+                    break;
+                case ModelType::EMBEDDING:
+                    if ($model instanceof AbstractModel && ! $model->getModelOptions()->isEmbedding()) {
+                        continue 2;
+                    }
+                    break;
+                default:
+                    // 如果没有指定类型，则全部添加
+                    break;
+            }
             $list[$name] = new OdinModel(key: $name, model: $model, attributes: $this->attributes[$name]);
         }
 
@@ -342,6 +404,7 @@ class ModelGatewayMapper extends ModelMapper
         $providerModelQuery = new ProviderModelQuery();
         $providerModelQuery->setStatus(Status::Enabled);
         $providerModelQuery->setCategory(Category::LLM);
+        $providerModelQuery->setModelType($modelType);
         $providerModelData = di(ProviderModelDomainService::class)->queries($providerDataIsolation, $providerModelQuery, Page::createNoPage());
         $providerConfigIds = [];
         foreach ($providerModelData['list'] as $providerModel) {
@@ -375,15 +438,36 @@ class ModelGatewayMapper extends ModelMapper
             }
 
             // 创建配置
-            $model = $this->createModelByProvider($providerModel, $providerConfig, $provider);
+            $model = $this->createModelByProvider($providerDataIsolation, $providerModel, $providerConfig, $provider, $filter);
+            if (! $model) {
+                continue;
+            }
             $list[$model->getAttributes()->getKey()] = $model;
         }
 
         return $list;
     }
 
-    private function createModelByProvider(ProviderModelEntity $providerModelEntity, ProviderConfigEntity $providerConfigEntity, ProviderEntity $providerEntity): OdinModel
-    {
+    private function createModelByProvider(
+        ProviderDataIsolation $providerDataIsolation,
+        ProviderModelEntity $providerModelEntity,
+        ProviderConfigEntity $providerConfigEntity,
+        ProviderEntity $providerEntity,
+        ?ModelFilter $filter = null
+    ): ?OdinModel {
+        if (! $filter) {
+            $filter = new ModelFilter();
+        }
+        $checkVisibleOrganization = $filter->isCheckVisibleOrganization() ?? true;
+        $checkVisibleApplication = $filter->isCheckVisibleApplication() ?? true;
+
+        if ($checkVisibleOrganization && $providerModelEntity->getVisibleOrganizations() && ! in_array($providerDataIsolation->getCurrentOrganizationCode(), $providerModelEntity->getVisibleOrganizations(), true)) {
+            return null;
+        }
+        if ($checkVisibleApplication && $providerModelEntity->getVisibleApplications() && ! in_array($filter->getAppId(), $providerModelEntity->getVisibleApplications(), true)) {
+            return null;
+        }
+
         $chat = false;
         $functionCall = false;
         $multiModal = false;
@@ -402,6 +486,15 @@ class ModelGatewayMapper extends ModelMapper
 
         $implementation = $providerEntity->getProviderCode()->getImplementation();
         $implementationConfig = $providerEntity->getProviderCode()->getImplementationConfig($providerConfigEntity->getConfig(), $providerModelEntity->getModelVersion());
+
+        $tag = $providerEntity->getProviderCode()->value;
+        if ($providerConfigEntity->getAlias()) {
+            $alias = $providerConfigEntity->getAlias();
+            if (! $providerDataIsolation->isOfficialOrganization() && in_array($providerConfigEntity->getOrganizationCode(), $providerDataIsolation->getOfficialOrganizationCodes())) {
+                $alias = 'Magic';
+            }
+            $tag = "{$tag}「{$alias}」";
+        }
 
         return new OdinModel(
             key: $key,
@@ -422,37 +515,42 @@ class ModelGatewayMapper extends ModelMapper
                 name: $providerModelEntity->getModelId(),
                 label: $providerModelEntity->getName(),
                 icon: $providerModelEntity->getIcon(),
-                tags: [['type' => 1, 'value' => $providerEntity->getProviderCode()->value]],
+                tags: [['type' => 1, 'value' => $tag]],
                 createdAt: $providerEntity->getCreatedAt(),
                 owner: 'MagicAI',
                 providerAlias: $providerConfigEntity->getAlias() ?? $providerEntity->getName(),
+                providerModelId: (string) $providerModelEntity->getId(),
+                providerId: (string) $providerConfigEntity->getId(),
             )
         );
     }
 
-    private function getByAdmin(string $model, ?string $orgCode = null): ?OdinModel
+    private function getByAdmin(string $model, ?string $orgCode = null, ?ModelFilter $filter = null): ?OdinModel
     {
+        $checkModelEnabled = $filter?->isCheckModelEnabled() ?? true;
+        $checkProviderEnabled = $filter?->isCheckProviderEnabled() ?? true;
+
         $providerDataIsolation = ProviderDataIsolation::create($orgCode ?? '');
         $providerDataIsolation->setContainOfficialOrganization(true);
         if (is_null($orgCode)) {
             $providerDataIsolation->disabled();
         }
-        $providerModel = di(ProviderModelDomainService::class)->getByIdOrModelId($providerDataIsolation, $model);
+        $providerModel = di(ProviderModelDomainService::class)->getByIdOrModelId($providerDataIsolation, $model, $checkModelEnabled);
 
-        if (! $providerModel || ! $providerModel->getStatus()->isEnabled()) {
+        if (! $providerModel) {
             return null;
         }
         if (! in_array($providerModel->getOrganizationCode(), $providerDataIsolation->getOfficialOrganizationCodes())) {
             if ($providerModel->getModelParentId() && $providerModel->getId() !== $providerModel->getModelParentId()) {
-                $providerModel = di(ProviderModelDomainService::class)->getById($providerDataIsolation, $providerModel->getModelParentId());
-                if (! $providerModel || ! $providerModel->getStatus()->isEnabled()) {
+                $providerModel = di(ProviderModelDomainService::class)->getOfficeModelById($providerModel->getModelParentId(), $checkModelEnabled);
+                if (! $providerModel) {
                     return null;
                 }
             }
         }
 
-        $providerConfig = di(ProviderConfigDomainService::class)->getById($providerDataIsolation, $providerModel->getProviderConfigId());
-        if (! $providerConfig || ! $providerConfig->getStatus()->isEnabled()) {
+        $providerConfig = di(ProviderConfigDomainService::class)->getById($providerDataIsolation, $providerModel->getProviderConfigId(), $checkProviderEnabled);
+        if (! $providerConfig) {
             return null;
         }
 
@@ -461,7 +559,7 @@ class ModelGatewayMapper extends ModelMapper
             return null;
         }
 
-        return $this->createModelByProvider($providerModel, $providerConfig, $provider);
+        return $this->createModelByProvider($providerDataIsolation, $providerModel, $providerConfig, $provider, $filter);
     }
 
     private function addAttributes(string $key, OdinModelAttributes $attributes): void

@@ -31,6 +31,11 @@ class TaskEntity extends AbstractEntity
     protected int $workspaceId = 0;
 
     /**
+     * @var int 项目ID
+     */
+    protected int $projectId = 0;
+
+    /**
      * @var int 话题ID
      */
     protected int $topicId = 0;
@@ -54,6 +59,11 @@ class TaskEntity extends AbstractEntity
      * @var string 用户上传的附件信息(JSON格式)
      */
     protected string $attachments = '';
+
+    /**
+     * @var string 提及信息(JSON格式)
+     */
+    protected ?string $mentions;
 
     /**
      * @var string 任务状态
@@ -99,7 +109,7 @@ class TaskEntity extends AbstractEntity
     {
         // 默认设置
         $this->taskStatus = TaskStatus::WAITING->value;
-        $this->initProperty($data);
+        parent::__construct($data);
     }
 
     /**
@@ -111,11 +121,13 @@ class TaskEntity extends AbstractEntity
             'id' => $this->id,
             'user_id' => $this->userId,
             'workspace_id' => $this->workspaceId,
+            'project_id' => $this->projectId,
             'topic_id' => $this->topicId,
             'task_id' => $this->taskId,
             'sandbox_id' => $this->sandboxId,
             'prompt' => $this->prompt,
             'attachments' => $this->attachments,
+            'mentions' => $this->getMentions(),
             'task_status' => $this->taskStatus,
             'work_dir' => $this->workDir,
             'task_mode' => $this->taskMode,
@@ -130,6 +142,33 @@ class TaskEntity extends AbstractEntity
         return array_filter($result, function ($value) {
             return $value !== null;
         });
+    }
+
+    /**
+     * Create DTO from array.
+     */
+    public static function fromArray(array $data): self
+    {
+        return new self([
+            'id' => $data['id'] ?? $data['Id'] ?? 0,
+            'user_id' => $data['user_id'] ?? $data['userId'] ?? '',
+            'workspace_id' => $data['workspace_id'] ?? $data['workspaceId'] ?? 0,
+            'project_id' => $data['project_id'] ?? $data['projectId'] ?? 0,
+            'topic_id' => $data['topic_id'] ?? $data['topicId'] ?? 0,
+            'task_id' => $data['task_id'] ?? $data['taskId'] ?? '',
+            'sandbox_id' => $data['sandbox_id'] ?? $data['sandboxId'] ?? '',
+            'prompt' => $data['prompt'] ?? '',
+            'attachments' => $data['attachments'] ?? '',
+            'mentions' => $data['mentions'] ?? null,
+            'task_status' => $data['task_status'] ?? $data['taskStatus'] ?? TaskStatus::WAITING->value,
+            'work_dir' => $data['work_dir'] ?? $data['workDir'] ?? '',
+            'task_mode' => $data['task_mode'] ?? $data['taskMode'] ?? 'chat',
+            'err_msg' => $data['err_msg'] ?? $data['errMsg'] ?? null,
+            'conversation_id' => $data['conversation_id'] ?? $data['conversationId'] ?? null,
+            'created_at' => $data['created_at'] ?? $data['createdAt'] ?? null,
+            'updated_at' => $data['updated_at'] ?? $data['updatedAt'] ?? null,
+            'deleted_at' => $data['deleted_at'] ?? $data['deletedAt'] ?? null,
+        ]);
     }
 
     public function getId(): int
@@ -162,6 +201,17 @@ class TaskEntity extends AbstractEntity
     public function setWorkspaceId(int $workspaceId): self
     {
         $this->workspaceId = $workspaceId;
+        return $this;
+    }
+
+    public function getProjectId(): int
+    {
+        return $this->projectId;
+    }
+
+    public function setProjectId(int $projectId): self
+    {
+        $this->projectId = $projectId;
         return $this;
     }
 
@@ -217,6 +267,17 @@ class TaskEntity extends AbstractEntity
     public function setAttachments(string $attachments): self
     {
         $this->attachments = $attachments;
+        return $this;
+    }
+
+    public function getMentions(): ?string
+    {
+        return $this->mentions ?? null;
+    }
+
+    public function setMentions(?string $mentions): self
+    {
+        $this->mentions = $mentions;
         return $this;
     }
 

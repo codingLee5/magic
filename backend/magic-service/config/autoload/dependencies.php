@@ -24,10 +24,22 @@ use App\Application\KnowledgeBase\VectorDatabase\Similarity\Driver\FullTextSimil
 use App\Application\KnowledgeBase\VectorDatabase\Similarity\Driver\GraphSimilaritySearchInterface;
 use App\Application\KnowledgeBase\VectorDatabase\Similarity\Driver\HybridSimilaritySearchInterface;
 use App\Application\KnowledgeBase\VectorDatabase\Similarity\Driver\SemanticSimilaritySearchInterface;
+use App\Application\MCP\SupperMagicMCP\SupperMagicAgentMCP;
+use App\Application\MCP\SupperMagicMCP\SupperMagicAgentMCPInterface;
+use App\Application\MCP\Utils\MCPExecutor\ExternalHttpExecutor;
+use App\Application\MCP\Utils\MCPExecutor\ExternalHttpExecutorInterface;
+use App\Application\MCP\Utils\MCPExecutor\ExternalStdioExecutor;
+use App\Application\MCP\Utils\MCPExecutor\ExternalStdioExecutorInterface;
 use App\Domain\Admin\Repository\Facade\AdminGlobalSettingsRepositoryInterface;
 use App\Domain\Admin\Repository\Persistence\AdminGlobalSettingsRepository;
+use App\Domain\Agent\Repository\Facade\AgentRepositoryInterface;
+use App\Domain\Agent\Repository\Facade\AgentVersionRepositoryInterface;
 use App\Domain\Agent\Repository\Facade\MagicBotThirdPlatformChatRepositoryInterface;
+use App\Domain\Agent\Repository\Persistence\AgentRepository;
+use App\Domain\Agent\Repository\Persistence\AgentVersionRepository;
 use App\Domain\Agent\Repository\Persistence\MagicBotThirdPlatformChatRepository;
+use App\Domain\Authentication\Repository\ApiKeyProviderRepository;
+use App\Domain\Authentication\Repository\Facade\ApiKeyProviderRepositoryInterface;
 use App\Domain\Authentication\Repository\Facade\AuthenticationRepositoryInterface;
 use App\Domain\Authentication\Repository\Implement\AuthenticationRepository;
 use App\Domain\Chat\DTO\Message\ChatMessage\SuperAgentMessageInterface;
@@ -41,7 +53,6 @@ use App\Domain\Chat\Repository\Facade\MagicChatTopicRepositoryInterface;
 use App\Domain\Chat\Repository\Facade\MagicContactIdMappingRepositoryInterface;
 use App\Domain\Chat\Repository\Facade\MagicFriendRepositoryInterface;
 use App\Domain\Chat\Repository\Facade\MagicMessageRepositoryInterface;
-use App\Domain\Chat\Repository\Facade\MagicStreamMessageRepositoryInterface;
 use App\Domain\Chat\Repository\Persistence\MagicChatConversationRepository;
 use App\Domain\Chat\Repository\Persistence\MagicChatFileRepository;
 use App\Domain\Chat\Repository\Persistence\MagicChatSeqRepository;
@@ -50,17 +61,22 @@ use App\Domain\Chat\Repository\Persistence\MagicContactIdMappingRepository;
 use App\Domain\Chat\Repository\Persistence\MagicFriendRepository;
 use App\Domain\Chat\Repository\Persistence\MagicMessageRepository;
 use App\Domain\Chat\Repository\Persistence\MagicMessageVersionsRepository;
-use App\Domain\Chat\Repository\Persistence\MagicStreamMessageRepository;
+use App\Domain\Chat\Service\MessageContentProvider;
+use App\Domain\Chat\Service\MessageContentProviderInterface;
 use App\Domain\Contact\Repository\Facade\MagicAccountRepositoryInterface;
 use App\Domain\Contact\Repository\Facade\MagicDepartmentRepositoryInterface;
 use App\Domain\Contact\Repository\Facade\MagicDepartmentUserRepositoryInterface;
 use App\Domain\Contact\Repository\Facade\MagicUserIdRelationRepositoryInterface;
 use App\Domain\Contact\Repository\Facade\MagicUserRepositoryInterface;
+use App\Domain\Contact\Repository\Facade\MagicUserSettingRepositoryInterface;
 use App\Domain\Contact\Repository\Persistence\MagicAccountRepository;
 use App\Domain\Contact\Repository\Persistence\MagicDepartmentRepository;
 use App\Domain\Contact\Repository\Persistence\MagicDepartmentUserRepository;
 use App\Domain\Contact\Repository\Persistence\MagicUserIdRelationRepository;
 use App\Domain\Contact\Repository\Persistence\MagicUserRepository;
+use App\Domain\Contact\Repository\Persistence\MagicUserSettingRepository;
+use App\Domain\Contact\Service\Facade\MagicUserDomainExtendInterface;
+use App\Domain\Contact\Service\MagicUserDomainExtendService;
 use App\Domain\File\Repository\Persistence\CloudFileRepository;
 use App\Domain\File\Repository\Persistence\Facade\CloudFileRepositoryInterface;
 use App\Domain\Flow\Repository\Facade\MagicFlowAIModelRepositoryInterface;
@@ -89,6 +105,10 @@ use App\Domain\Flow\Repository\Persistence\MagicFlowVersionRepository;
 use App\Domain\Flow\Repository\Persistence\MagicFlowWaitMessageRepository;
 use App\Domain\Group\Repository\Facade\MagicGroupRepositoryInterface;
 use App\Domain\Group\Repository\Persistence\MagicGroupRepository;
+use App\Domain\KnowledgeBase\Entity\ValueObject\DocumentFile\ExternalDocumentFile;
+use App\Domain\KnowledgeBase\Entity\ValueObject\DocumentFile\Interfaces\ExternalDocumentFileInterface;
+use App\Domain\KnowledgeBase\Entity\ValueObject\DocumentFile\Interfaces\ThirdPlatformDocumentFileInterface;
+use App\Domain\KnowledgeBase\Entity\ValueObject\DocumentFile\ThirdPlatformDocumentFile;
 use App\Domain\KnowledgeBase\Repository\Facade\KnowledgeBaseDocumentRepositoryInterface;
 use App\Domain\KnowledgeBase\Repository\Facade\KnowledgeBaseFragmentRepositoryInterface;
 use App\Domain\KnowledgeBase\Repository\Facade\KnowledgeBaseRepositoryInterface;
@@ -96,7 +116,11 @@ use App\Domain\KnowledgeBase\Repository\Persistence\KnowledgeBaseBaseRepository;
 use App\Domain\KnowledgeBase\Repository\Persistence\KnowledgeBaseDocumentRepository;
 use App\Domain\KnowledgeBase\Repository\Persistence\KnowledgeBaseFragmentRepository;
 use App\Domain\MCP\Repository\Facade\MCPServerRepositoryInterface;
+use App\Domain\MCP\Repository\Facade\MCPServerToolRepositoryInterface;
+use App\Domain\MCP\Repository\Facade\MCPUserSettingRepositoryInterface;
 use App\Domain\MCP\Repository\Persistence\MCPServerRepository;
+use App\Domain\MCP\Repository\Persistence\MCPServerToolRepository;
+use App\Domain\MCP\Repository\Persistence\MCPUserSettingRepository;
 use App\Domain\ModelGateway\Repository\Facade\AccessTokenRepositoryInterface;
 use App\Domain\ModelGateway\Repository\Facade\ApplicationRepositoryInterface;
 use App\Domain\ModelGateway\Repository\Facade\ModelConfigRepositoryInterface;
@@ -129,6 +153,10 @@ use App\Domain\Token\Item\MagicTokenExtra;
 use App\Domain\Token\Repository\Facade\MagicTokenExtraInterface;
 use App\Domain\Token\Repository\Facade\MagicTokenRepositoryInterface;
 use App\Domain\Token\Repository\Persistence\MagicMagicTokenRepository;
+use App\Infrastructure\Core\Broadcast\Publisher\AmqpPublisher;
+use App\Infrastructure\Core\Broadcast\Publisher\PublisherInterface;
+use App\Infrastructure\Core\Broadcast\Subscriber\AmqpSubscriber;
+use App\Infrastructure\Core\Broadcast\Subscriber\SubscriberInterface;
 use App\Infrastructure\Core\Contract\Authorization\BaseFlowOpenApiCheck;
 use App\Infrastructure\Core\Contract\Authorization\FlowOpenApiCheckInterface;
 use App\Infrastructure\Core\Contract\Flow\CodeExecutor\PHPExecutorInterface;
@@ -145,11 +173,17 @@ use App\Infrastructure\Core\Embeddings\EmbeddingGenerator\OdinEmbeddingGenerator
 use App\Infrastructure\Core\File\Parser\Driver\ExcelFileParserDriver;
 use App\Infrastructure\Core\File\Parser\Driver\Interfaces\ExcelFileParserDriverInterface;
 use App\Infrastructure\Core\File\Parser\Driver\Interfaces\OcrFileParserDriverInterface;
+use App\Infrastructure\Core\File\Parser\Driver\Interfaces\PdfFileParserDriverInterface;
 use App\Infrastructure\Core\File\Parser\Driver\Interfaces\TextFileParserDriverInterface;
 use App\Infrastructure\Core\File\Parser\Driver\Interfaces\WordFileParserDriverInterface;
 use App\Infrastructure\Core\File\Parser\Driver\OcrFileParserDriver;
+use App\Infrastructure\Core\File\Parser\Driver\PdfFileParserDriver;
 use App\Infrastructure\Core\File\Parser\Driver\TextFileParserDriver;
 use App\Infrastructure\Core\File\Parser\Driver\WordFileParserDriver;
+use App\Infrastructure\Core\HighAvailability\Interface\EndpointProviderInterface;
+use App\Infrastructure\Core\HighAvailability\Service\ModelGatewayEndpointProvider;
+use App\Infrastructure\Core\TempAuth\RedisTempAuth;
+use App\Infrastructure\Core\TempAuth\TempAuthInterface;
 use App\Infrastructure\ExternalAPI\Sms\SmsInterface;
 use App\Infrastructure\ExternalAPI\Sms\TemplateInterface;
 use App\Infrastructure\ExternalAPI\Sms\Volcengine\Template;
@@ -159,6 +193,8 @@ use App\Infrastructure\Util\Auth\Permission\PermissionInterface;
 use App\Infrastructure\Util\Client\SimpleClientFactory;
 use App\Infrastructure\Util\Locker\LockerInterface;
 use App\Infrastructure\Util\Locker\RedisLocker;
+use App\Interfaces\MCP\Facade\HttpTransportHandler\ApiKeyProviderAuthenticator;
+use Dtyq\PhpMcp\Shared\Auth\AuthenticatorInterface;
 use Hyperf\Config\ProviderConfig;
 use Hyperf\Crontab\Strategy\CoroutineStrategy;
 use Hyperf\Crontab\Strategy\StrategyInterface;
@@ -180,6 +216,7 @@ $dependencies = [
     // core
     ThirdPlatformDataIsolationManagerInterface::class => BaseThirdPlatformDataIsolationManager::class,
     DocumentSplitterInterface::class => OdinRecursiveCharacterTextSplitter::class,
+    TempAuthInterface::class => RedisTempAuth::class,
     HandleDataIsolationInterface::class => BaseHandleDataIsolation::class,
     FlowOpenApiCheckInterface::class => BaseFlowOpenApiCheck::class,
     MessageAttachmentHandlerInterface::class => BaseMessageAttachmentHandler::class,
@@ -190,6 +227,7 @@ $dependencies = [
     MagicChatSeqRepositoryInterface::class => MagicChatSeqRepository::class,
     MagicChatTopicRepositoryInterface::class => MagicChatTopicRepository::class,
     MagicContactIdMappingRepositoryInterface::class => MagicContactIdMappingRepository::class,
+    MessageContentProviderInterface::class => MessageContentProvider::class,
     OrganizationsPlatformRepositoryInterface::class => OrganizationsPlatformRepository::class,
     OpenPlatformConfigInterface::class => OpenPlatformConfigItem::class,
     MagicChatMessageVersionsRepositoryInterface::class => MagicMessageVersionsRepository::class,
@@ -198,6 +236,10 @@ $dependencies = [
     AdapterInterface::class => RedisAdapter::class,
     SidProviderInterface::class => DistributedSidProvider::class,
     NamespaceInterface::class => BaseNamespace::class,
+
+    // agent
+    AgentRepositoryInterface::class => AgentRepository::class,
+    AgentVersionRepositoryInterface::class => AgentVersionRepository::class,
 
     // magic-flow
     MagicFlowRepositoryInterface::class => MagicFlowRepository::class,
@@ -238,6 +280,15 @@ $dependencies = [
 
     // mcp
     MCPServerRepositoryInterface::class => MCPServerRepository::class,
+    MCPServerToolRepositoryInterface::class => MCPServerToolRepository::class,
+    AuthenticatorInterface::class => ApiKeyProviderAuthenticator::class,
+    MCPUserSettingRepositoryInterface::class => MCPUserSettingRepository::class,
+    SupperMagicAgentMCPInterface::class => SupperMagicAgentMCP::class,
+    ExternalStdioExecutorInterface::class => ExternalStdioExecutor::class,
+    ExternalHttpExecutorInterface::class => ExternalHttpExecutor::class,
+
+    // api-key
+    ApiKeyProviderRepositoryInterface::class => ApiKeyProviderRepository::class,
 
     // magic-api
     ApplicationRepositoryInterface::class => ApplicationRepository::class,
@@ -266,6 +317,8 @@ $dependencies = [
     MagicUserIdRelationRepositoryInterface::class => MagicUserIdRelationRepository::class,
     MagicDepartmentUserRepositoryInterface::class => MagicDepartmentUserRepository::class,
     MagicDepartmentRepositoryInterface::class => MagicDepartmentRepository::class,
+    MagicUserSettingRepositoryInterface::class => MagicUserSettingRepository::class,
+    MagicUserDomainExtendInterface::class => MagicUserDomainExtendService::class,
 
     // 认证体系
 
@@ -277,7 +330,6 @@ $dependencies = [
 
     // 聊天文件
     MagicChatFileRepositoryInterface::class => MagicChatFileRepository::class,
-    MagicStreamMessageRepositoryInterface::class => MagicStreamMessageRepository::class,
 
     AuthenticationRepositoryInterface::class => AuthenticationRepository::class,
     CloudFileRepositoryInterface::class => CloudFileRepository::class,
@@ -298,18 +350,27 @@ $dependencies = [
     TextFileParserDriverInterface::class => TextFileParserDriver::class,
     ExcelFileParserDriverInterface::class => ExcelFileParserDriver::class,
     WordFileParserDriverInterface::class => WordFileParserDriver::class,
+    PdfFileParserDriverInterface::class => PdfFileParserDriver::class,
 
     // 知识库
     KnowledgeBaseStrategyInterface::class => BaseKnowledgeBaseStrategy::class,
-
     ExternalFileDocumentFileStrategyInterface::class => ExternalFileDocumentFileStrategyDriver::class,
     ThirdPlatformDocumentFileStrategyInterface::class => ThirdPlatformDocumentFileStrategyDriver::class,
+    ExternalDocumentFileInterface::class => ExternalDocumentFile::class,
+    ThirdPlatformDocumentFileInterface::class => ThirdPlatformDocumentFile::class,
 
     // admin
     AdminGlobalSettingsRepositoryInterface::class => AdminGlobalSettingsRepository::class,
 
     // 权限
     PermissionInterface::class => Permission::class,
+
+    // broadcast
+    SubscriberInterface::class => AmqpSubscriber::class,
+    PublisherInterface::class => AmqpPublisher::class,
+
+    // high-availability
+    EndpointProviderInterface::class => ModelGatewayEndpointProvider::class,
 ];
 
 // 如果存在重复,优先取dependencies_priority的配置,不存在重复，就合并

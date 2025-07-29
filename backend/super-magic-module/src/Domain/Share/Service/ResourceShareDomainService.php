@@ -7,10 +7,10 @@ declare(strict_types=1);
 
 namespace Dtyq\SuperMagic\Domain\Share\Service;
 
-use App\ErrorCode\ShareErrorCode;
 use App\Infrastructure\Core\Exception\ExceptionBuilder;
 use Dtyq\SuperMagic\Domain\Share\Entity\ResourceShareEntity;
 use Dtyq\SuperMagic\Domain\Share\Repository\Facade\ResourceShareRepositoryInterface;
+use Dtyq\SuperMagic\ErrorCode\ShareErrorCode;
 use Dtyq\SuperMagic\Infrastructure\Utils\PasswordCrypt;
 use Dtyq\SuperMagic\Infrastructure\Utils\ShareCodeGenerator;
 use Exception;
@@ -41,7 +41,7 @@ class ResourceShareDomainService
 
         // 2. 验证分享是否存在
         if (! $shareEntity) {
-            ExceptionBuilder::throw(ShareErrorCode::SHARE_NOT_FOUND, 'share.not_found', [$shareId]);
+            ExceptionBuilder::throw(ShareErrorCode::NOT_FOUND, 'share.not_found', [$shareId]);
         }
 
         // 3. 验证是否有权限取消分享（只有分享创建者或管理员可以取消）
@@ -73,12 +73,12 @@ class ResourceShareDomainService
     /**
      * 获取分享详情.
      *
-     * @param int $shareId 分享ID
+     * @param string $resourceId 资源ID
      * @return null|ResourceShareEntity 分享实体
      */
-    public function getShareById(int $shareId): ?ResourceShareEntity
+    public function getShareByResourceId(string $resourceId): ?ResourceShareEntity
     {
-        return $this->shareRepository->getShareById($shareId);
+        return $this->shareRepository->getShareByResourceId($resourceId);
     }
 
     public function getShareByCode(string $code): ?ResourceShareEntity
@@ -241,6 +241,7 @@ class ResourceShareDomainService
         // 设置更新信息
         $shareEntity->setUpdatedAt(date('Y-m-d H:i:s'));
         $shareEntity->setUpdatedUid($userId);
+        $shareEntity->setDeletedAt(null);
 
         // 4. 保存实体
         try {
@@ -308,16 +309,6 @@ class ResourceShareDomainService
      */
     protected function findExistingShare(string $resourceId, int $resourceType, string $userId): ?ResourceShareEntity
     {
-        $shares = $this->shareRepository->paginate([
-            'resource_id' => $resourceId,
-            'resource_type' => $resourceType,
-            'created_uid' => $userId,
-        ], 1, 1);
-
-        if ($shares['total'] > 0 && ! empty($shares['list'])) {
-            return $shares['list'][0];
-        }
-
-        return null;
+        return $this->shareRepository->getShareByResource($userId, $resourceId, $resourceType);
     }
 }

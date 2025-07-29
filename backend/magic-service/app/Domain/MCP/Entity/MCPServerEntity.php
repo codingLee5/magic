@@ -8,6 +8,7 @@ declare(strict_types=1);
 namespace App\Domain\MCP\Entity;
 
 use App\Domain\MCP\Entity\ValueObject\Code;
+use App\Domain\MCP\Entity\ValueObject\ServiceConfig\ServiceConfigInterface;
 use App\Domain\MCP\Entity\ValueObject\ServiceType;
 use App\ErrorCode\MCPErrorCode;
 use App\Infrastructure\Core\AbstractEntity;
@@ -45,10 +46,12 @@ class MCPServerEntity extends AbstractEntity
      */
     protected ServiceType $type;
 
+    protected ServiceConfigInterface $serviceConfig;
+
     /**
      * 是否启用.
      */
-    protected bool $enabled = false;
+    protected ?bool $enabled = null;
 
     protected string $creator;
 
@@ -59,6 +62,12 @@ class MCPServerEntity extends AbstractEntity
     protected DateTime $updatedAt;
 
     private int $userOperation = 0;
+
+    private int $toolsCount = 0;
+
+    private bool $office = false;
+
+    private bool $builtIn = false;
 
     public function shouldCreate(): bool
     {
@@ -84,8 +93,16 @@ class MCPServerEntity extends AbstractEntity
         $this->updatedAt = $this->createdAt;
         $this->code = Code::MagicMCPService->gen();
         $this->type = $this->type ?? ServiceType::SSE;
-        $this->enabled = $this->enabled ?? false;
+        $this->enabled = $this->enabled ?? true;
         $this->id = null;
+
+        // Ensure serviceConfig is always set
+        if (! isset($this->serviceConfig)) {
+            $this->serviceConfig = $this->type->createServiceConfig([]);
+        }
+
+        // Validate service configuration
+        $this->serviceConfig->validate();
     }
 
     public function prepareForModification(MCPServerEntity $mcpServerEntity): void
@@ -102,6 +119,10 @@ class MCPServerEntity extends AbstractEntity
         $mcpServerEntity->setIcon($this->icon);
         $mcpServerEntity->setModifier($this->creator);
 
+        // Handle service config - always validate and set since it's never null
+        $this->serviceConfig->validate();
+        $mcpServerEntity->setServiceConfig($this->serviceConfig);
+
         if (isset($this->type)) {
             $mcpServerEntity->setType($this->type);
         }
@@ -116,6 +137,16 @@ class MCPServerEntity extends AbstractEntity
     public function prepareForChangeEnable(): void
     {
         $this->enabled = ! $this->enabled;
+    }
+
+    public function isBuiltIn(): bool
+    {
+        return $this->builtIn;
+    }
+
+    public function setBuiltIn(bool $builtIn): void
+    {
+        $this->builtIn = $builtIn;
     }
 
     // Getters and Setters...
@@ -247,5 +278,38 @@ class MCPServerEntity extends AbstractEntity
     public function setUserOperation(int $userOperation): void
     {
         $this->userOperation = $userOperation;
+    }
+
+    public function getToolsCount(): int
+    {
+        return $this->toolsCount;
+    }
+
+    public function setToolsCount(int $toolsCount): void
+    {
+        $this->toolsCount = $toolsCount;
+    }
+
+    public function getServiceConfig(): ServiceConfigInterface
+    {
+        return $this->serviceConfig;
+    }
+
+    public function setServiceConfig(array|ServiceConfigInterface $serviceConfig): void
+    {
+        if (is_array($serviceConfig)) {
+            $serviceConfig = $this->type->createServiceConfig($serviceConfig);
+        }
+        $this->serviceConfig = $serviceConfig;
+    }
+
+    public function isOffice(): bool
+    {
+        return $this->office;
+    }
+
+    public function setOffice(bool $office): void
+    {
+        $this->office = $office;
     }
 }

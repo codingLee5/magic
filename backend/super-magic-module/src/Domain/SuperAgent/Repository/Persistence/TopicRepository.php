@@ -23,7 +23,21 @@ class TopicRepository implements TopicRepositoryInterface
 
     public function getTopicById(int $id): ?TopicEntity
     {
-        $model = $this->model::query()->find($id);
+        $model = $this->model::query()->whereNull('deleted_at')
+            ->where('id', $id)
+            ->orWhere('chat_topic_id', $id)
+            ->first();
+        if (! $model) {
+            return null;
+        }
+
+        $data = $this->convertModelToEntityData($model->toArray());
+        return new TopicEntity($data);
+    }
+
+    public function getTopicBySandboxId(string $sandboxId): ?TopicEntity
+    {
+        $model = $this->model::query()->whereNull('deleted_at')->where('sandbox_id', $sandboxId)->first();
         if (! $model) {
             return null;
         }
@@ -62,6 +76,9 @@ class TopicRepository implements TopicRepositoryInterface
         foreach ($conditions as $field => $value) {
             if (is_array($value)) {
                 $query->whereIn($field, $value);
+            } elseif ($field === 'topic_name') {
+                // topic_name 字段使用 like 操作进行模糊匹配
+                $query->where($field, 'like', '%' . $value . '%');
             } else {
                 $query->where($field, $value);
             }
@@ -118,6 +135,24 @@ class TopicRepository implements TopicRepositoryInterface
         return $this->model::query()
             ->where('id', $topicEntity->getId())
             ->update($entityArray) > 0;
+    }
+
+    // 使用updated_at 作为乐观锁
+    public function updateTopicWithUpdatedAt(TopicEntity $topicEntity, string $updatedAt): bool
+    {
+        $topicEntity->setUpdatedAt(date('Y-m-d H:i:s'));
+        $entityArray = $topicEntity->toArray();
+        return $this->model::query()
+            ->where('id', $topicEntity->getId())
+            ->where('updated_at', $updatedAt)
+            ->update($entityArray) > 0;
+    }
+
+    public function updateTopicByCondition(array $condition, array $data): bool
+    {
+        return $this->model::query()
+            ->where($condition)
+            ->update($data) > 0;
     }
 
     public function deleteTopic(int $id): bool
@@ -222,13 +257,26 @@ class TopicRepository implements TopicRepositoryInterface
         ];
     }
 
-    public function updateTopicStatus(int $id, $taskId, TaskStatus $status): bool
+    public function updateTopicStatus(int $id, $taskId, string $sandboxId, TaskStatus $status): bool
+    {
+        return $this->model::query()
+            ->where('id', $id)
+            ->update([
+                'sandbox_id' => $sandboxId,
+                'current_task_id' => $taskId,
+                'current_task_status' => $status->value,
+                'updated_at' => date('Y-m-d H:i:s'),
+            ]) > 0;
+    }
+
+    public function updateTopicStatusAndSandboxId(int $id, $taskId, TaskStatus $status, string $sandboxId): bool
     {
         return $this->model::query()
             ->where('id', $id)
             ->update([
                 'current_task_id' => $taskId,
                 'current_task_status' => $status->value,
+                'sandbox_id' => $sandboxId,
                 'updated_at' => date('Y-m-d H:i:s'),
             ]) > 0;
     }
@@ -257,6 +305,90 @@ class TopicRepository implements TopicRepositoryInterface
         }
 
         return $result;
+    }
+
+    public function updateTopicStatusBySandboxIds(array $sandboxIds, string $status): bool
+    {
+        return $this->model::query()
+            ->whereIn('sandbox_id', $sandboxIds)
+            ->update([
+                'current_task_status' => $status,
+                'updated_at' => date('Y-m-d H:i:s'),
+            ]) > 0;
+    }
+
+    /**
+     * 根据项目ID获取话题列表.
+     */
+    public function getTopicsByProjectId(int $projectId, string $userId): array
+    {
+        $models = $this->model::query()
+            ->where('project_id', $projectId)
+            ->where('user_id', $userId)
+            ->whereNull('deleted_at')
+            ->orderBy('updated_at', 'desc')
+            ->get();
+
+        $result = [];
+        foreach ($models as $model) {
+            $data = $this->convertModelToEntityData($model->toArray());
+            $result[] = new TopicEntity($data);
+        }
+
+        return $result;
+    }
+
+    /**
+     * 统计项目下的话题数量.
+     */
+    public function countTopicsByProjectId(int $projectId): int
+    {
+        return $this->model::query()
+            ->where('project_id', $projectId)
+            ->whereNull('deleted_at')
+            ->count();
+    }
+
+    /**
+     * 批量获取有运行中话题的工作区ID列表.
+     *
+     * @param array $workspaceIds 工作区ID数组
+     * @return array 有运行中话题的工作区ID数组
+     */
+    public function getRunningWorkspaceIds(array $workspaceIds): array
+    {
+        if (empty($workspaceIds)) {
+            return [];
+        }
+
+        return $this->model::query()
+            ->whereIn('workspace_id', $workspaceIds)
+            ->where('current_task_status', TaskStatus::RUNNING->value)
+            ->whereNull('deleted_at')
+            ->distinct()
+            ->pluck('workspace_id')
+            ->toArray();
+    }
+
+    /**
+     * 批量获取有运行中话题的项目ID列表.
+     *
+     * @param array $projectIds 项目ID数组
+     * @return array 有运行中话题的项目ID数组
+     */
+    public function getRunningProjectIds(array $projectIds): array
+    {
+        if (empty($projectIds)) {
+            return [];
+        }
+
+        return $this->model::query()
+            ->whereIn('project_id', $projectIds)
+            ->where('current_task_status', TaskStatus::RUNNING->value)
+            ->whereNull('deleted_at')
+            ->distinct()
+            ->pluck('project_id')
+            ->toArray();
     }
 
     /**

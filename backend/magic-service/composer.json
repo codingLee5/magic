@@ -77,7 +77,8 @@
         "volcengine/volc-sdk-php": "^1.0",
         "w7corp/easywechat": "^6.17",
         "wyndow/fuzzywuzzy": "^0.6.0",
-        "dtyq/super-magic-module": "^v0.0"
+        "dtyq/php-mcp": "0.1.*",
+        "dtyq/super-magic-module": "^v0.0"  
     },
     "require-dev": {
         "friendsofphp/php-cs-fixer": "^3.0",
@@ -85,7 +86,7 @@
         "hyperf/testing": "~3.1.0",
         "hyperf/watcher": "^3.1",
         "mockery/mockery": "^1.0",
-        "phpstan/phpstan": "^1.0",
+        "phpstan/phpstan": "^2.1",
         "phpunit/phpunit": "^10.5",
         "roave/security-advisories": "dev-latest",
         "viest/php-ext-xlswriter-ide-helper": "^1.3"
@@ -145,6 +146,5 @@
         "php-accessor": "php -dopcache.enable_cli=1 -dopcache.jit_buffer_size=128M -dopcache.jit=tracing vendor/bin/php-accessor generate"
     },
     "repositories": [
-        
     ]
 }

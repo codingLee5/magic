@@ -11,9 +11,16 @@ use App\ErrorCode\GenericErrorCode;
 use App\Infrastructure\Core\Exception\BusinessException;
 use App\Infrastructure\Core\Exception\ExceptionBuilder;
 use App\Infrastructure\Util\Context\RequestContext;
+use App\Infrastructure\Util\ShadowCode\ShadowCode;
 use Dtyq\ApiResponse\Annotation\ApiResponse;
+use Dtyq\SuperMagic\Application\SuperAgent\Service\AgentAppService;
+use Dtyq\SuperMagic\Application\SuperAgent\Service\HandleTaskMessageAppService;
+use Dtyq\SuperMagic\Application\SuperAgent\Service\ProjectAppService;
+use Dtyq\SuperMagic\Application\SuperAgent\Service\TaskAppService;
+use Dtyq\SuperMagic\Application\SuperAgent\Service\TopicAppService;
 use Dtyq\SuperMagic\Application\SuperAgent\Service\TopicTaskAppService;
 use Dtyq\SuperMagic\Application\SuperAgent\Service\WorkspaceAppService;
+use Dtyq\SuperMagic\Domain\SuperAgent\Service\UserDomainService;
 use Dtyq\SuperMagic\Interfaces\SuperAgent\DTO\Request\GetFileUrlsRequestDTO;
 use Dtyq\SuperMagic\Interfaces\SuperAgent\DTO\Request\GetTaskFilesRequestDTO;
 use Dtyq\SuperMagic\Interfaces\SuperAgent\DTO\TopicTaskMessageDTO;
@@ -27,6 +34,13 @@ class TaskApi extends AbstractApi
         protected RequestInterface $request,
         protected WorkspaceAppService $workspaceAppService,
         protected TopicTaskAppService $topicTaskAppService,
+        protected HandleTaskMessageAppService $handleTaskAppService,
+        protected TaskAppService $taskAppService,
+        protected ProjectAppService $projectAppService,
+        protected TopicAppService $topicAppService,
+        protected UserDomainService $userDomainService,
+        protected HandleTaskMessageAppService $handleTaskMessageAppService,
+        protected AgentAppService $agentAppService,
     ) {
     }
 
@@ -51,10 +65,41 @@ class TaskApi extends AbstractApi
             ExceptionBuilder::throw(GenericErrorCode::ParameterMissing, 'token_invalid');
         }
 
+        // 查看是否混淆
+        $isConfusion = $this->request->input('obfuscated', false);
+        if ($isConfusion) {
+            // 混淆处理
+            $rawData = ShadowCode::unShadow($this->request->input('data', ''));
+            $requestData = json_decode($rawData, true);
+        } else {
+            $requestData = $this->request->all();
+        }
+
         // 从请求中创建DTO
-        $messageDTO = TopicTaskMessageDTO::fromArray($this->request->all());
+        $messageDTO = TopicTaskMessageDTO::fromArray($requestData);
         // 调用应用服务进行消息投递
         return $this->topicTaskAppService->deliverTopicTaskMessage($messageDTO);
+    }
+
+    public function resumeTask(RequestContext $requestContext): array
+    {
+        // 从 header 中获取 token 字段
+        $token = $this->request->header('token', '');
+        if (empty($token)) {
+            ExceptionBuilder::throw(GenericErrorCode::ParameterMissing, 'token_required');
+        }
+
+        // 从 env 获取沙箱 token ，然后对比沙箱 token 和请求 token 是否一致
+        $sandboxToken = config('super-magic.sandbox.token', '');
+        if ($sandboxToken !== $token) {
+            ExceptionBuilder::throw(GenericErrorCode::ParameterMissing, 'token_invalid');
+        }
+        $sandboxId = $this->request->input('sandbox_id', '');
+        $isInit = $this->request->input('is_init', false);
+
+        $this->taskAppService->sendContinueMessageToSandbox($sandboxId, $isInit);
+
+        return [];
     }
 
     /**
@@ -101,11 +146,19 @@ class TaskApi extends AbstractApi
         $requestContext->setUserAuthorization(di(AuthManager::class)->guard(name: 'web')->user());
         $userAuthorization = $requestContext->getUserAuthorization();
 
+        // 构建options参数
+        $options = [];
+        //        if (! $dto->getCache()) {
+        //            $options['cache'] = false;
+        //        }
+        $options['cache'] = false;
+
         // 调用应用服务
         return $this->workspaceAppService->getFileUrls(
             $userAuthorization,
             $dto->getFileIds(),
-            $dto->getDownloadMode()
+            $dto->getDownloadMode(),
+            $options
         );
     }
 }

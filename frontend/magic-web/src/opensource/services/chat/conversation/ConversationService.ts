@@ -32,6 +32,7 @@ import LastConversationService from "./LastConversationService"
 import MessageReplyService from "../message/MessageReplyService"
 import groupInfoStore from "@/opensource/stores/groupInfo"
 import { fetchPaddingData } from "@/utils/request"
+import { bigNumCompare } from "@/utils/string"
 
 /**
  * 会话服务
@@ -68,13 +69,11 @@ class ConversationService {
 			organizationCode,
 		)
 
-		console.log("cache", cache)
-
 		if (cache) {
 			conversationSidebarStore.setConversationSidebarGroups(cache)
 
 			// 从数据库加载会话
-			await this.loadConversationsFromDB()
+			await this.loadConversationsFromDB(userInfo?.user_id)
 		} else {
 			// 没有拉取过，拉取当前组织的会话
 			await this.refreshConversationData()
@@ -111,7 +110,7 @@ class ConversationService {
 			.then((items) => {
 				if (items.length) {
 					// 更新会话信息
-					this.updateConversations(items)
+					this.replaceConversations(items)
 				}
 			})
 			.then(() => {
@@ -124,8 +123,8 @@ class ConversationService {
 	 * 更新多个会话信息
 	 * @param filteredConversationList 会话列表
 	 */
-	updateConversations(filteredConversationList: ConversationFromService[]) {
-		conversationStore.updateConversations(filteredConversationList)
+	replaceConversations(filteredConversationList: ConversationFromService[]) {
+		conversationStore.replaceConversations(filteredConversationList)
 
 		// 重新计算侧边栏会话
 		this.calcSidebarConversations()
@@ -365,39 +364,40 @@ class ConversationService {
 	 * 从数据库加载会话
 	 * @param calcSidebarConversations 是否计算侧边栏会话
 	 */
-	loadConversationsFromDB(calcSidebarConversations = true) {
-		if (!this.organizationCode) return
-		return ConversationDbServices.loadNormalConversationsFromDB(this.organizationCode).then(
-			(conversations) => {
-				console.log("loadConversationsFromDB ====> ", conversations)
+	loadConversationsFromDB(userId: string | undefined, calcSidebarConversations = true) {
+		if (!this.organizationCode || !userId) return
+		return ConversationDbServices.loadNormalConversationsFromDB(
+			this.organizationCode,
+			userId,
+		).then((conversations) => {
+			console.log("loadConversationsFromDB ====> ", conversations)
 
-				const conversationList = conversations.map((item) => new Conversation(item))
+			const conversationList = conversations.map((item) => new Conversation(item))
 
-				conversationStore.setConversations(conversationList)
+			conversationStore.setConversations(conversationList)
 
-				// 如果当前会话为空,或者不是当前组织的会话，则设置当前会话
-				if (
-					!conversationStore.currentConversation ||
-					conversationStore.currentConversation.user_organization_code !==
-						this.organizationCode
-				) {
-					const lastConversation = conversationStore.getConversation(
-						LastConversationService.getLastConversation(
-							this.magicId,
-							this.organizationCode,
-						) ?? conversationList?.[0]?.id,
-					)
-					this.switchConversation(lastConversation)
-				}
+			// 如果当前会话为空,或者不是当前组织的会话，则设置当前会话
+			if (
+				!conversationStore.currentConversation ||
+				conversationStore.currentConversation.user_organization_code !==
+					this.organizationCode
+			) {
+				const lastConversation = conversationStore.getConversation(
+					LastConversationService.getLastConversation(
+						this.magicId,
+						this.organizationCode,
+					) ?? conversationList?.[0]?.id,
+				)
+				this.switchConversation(lastConversation)
+			}
 
-				if (calcSidebarConversations) {
-					this.calcSidebarConversations()
-				}
+			if (calcSidebarConversations) {
+				this.calcSidebarConversations()
+			}
 
-				// 刷新会话数据
-				this.refreshConversationData(conversationList)
-			},
-		)
+			// 刷新会话数据
+			this.refreshConversationData(conversationList)
+		})
 	}
 
 	/**
@@ -408,6 +408,9 @@ class ConversationService {
 			Object.keys(conversationStore.conversations),
 			conversationStore.conversations,
 		)
+
+		console.log("sidebarGroups ====> ", sidebarGroups)
+
 		conversationSidebarStore.setConversationSidebarGroups(sidebarGroups)
 		ConversationCacheServices.cacheConversationSiderbarGroups(
 			this.magicId,
@@ -702,21 +705,36 @@ class ConversationService {
 		// 如果消息没有文本，则不更新 (大概率是流式消息，最开始没有内容，在流式结束完之后会再次更新)
 		if (!message.text) return
 
+		const time = conversationStore
+			.getConversation(conversationId)
+			?.getLastMessageTime(message.time)
+
 		if (conversationStore.hasConversation(conversationId)) {
 			const conversation = conversationStore.getConversation(conversationId)
 
-			const messageTopicId = message.topic_id
-			const conversationTopicId = conversation.current_topic_id
+			const messageTopicId = message.topic_id ?? ""
+			const conversationTopicId = conversation.current_topic_id ?? ""
+
+			// 如果消息seq_id小于会话最后一条消息seq_id，则不更新
+			if (
+				conversation.last_receive_message?.seq_id &&
+				bigNumCompare(message.seq_id, conversation.last_receive_message?.seq_id ?? "") < 0
+			)
+				return
 
 			// 如果不是当前会话，并且消息话题ID与会话话题ID不一致，则更新会话话题ID 和 最后一条消息
-			if (
-				conversationId !== conversationStore.currentConversation?.id ||
-				messageTopicId !== conversationTopicId
-			) {
-				conversationStore.updateConversationCurrentTopicId(conversationId, messageTopicId)
-				conversation.setLastReceiveMessage(message)
+			if (conversationId !== conversationStore.currentConversation?.id) {
+				// 如果消息话题ID与会话话题ID不一致，则更新会话话题ID
+				if (messageTopicId !== conversationTopicId) {
+					conversationStore.updateConversationCurrentTopicId(
+						conversationId,
+						messageTopicId,
+					)
+				}
+				conversation.setLastReceiveMessageAndLastReceiveTime(message)
 				// 更新数据库
 				ConversationDbServices.updateConversation(conversationId, {
+					last_receive_message_time: time,
 					current_topic_id: messageTopicId,
 					last_receive_message: message,
 				})
@@ -726,9 +744,10 @@ class ConversationService {
 				conversationId === conversationStore.currentConversation?.id &&
 				messageTopicId === conversationTopicId
 			) {
-				conversation.setLastReceiveMessage(message)
+				conversation.setLastReceiveMessageAndLastReceiveTime(message)
 				// 更新数据库
 				ConversationDbServices.updateConversation(conversationId, {
+					last_receive_message_time: time,
 					last_receive_message: message,
 				})
 			}

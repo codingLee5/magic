@@ -9,6 +9,7 @@ namespace Dtyq\SuperMagic\Domain\SuperAgent\Entity;
 
 use App\Infrastructure\Core\AbstractEntity;
 use App\Infrastructure\Util\IdGenerator\IdGenerator;
+use Dtyq\SuperMagic\Application\SuperAgent\DTO\TaskMessageDTO;
 
 class TaskMessageEntity extends AbstractEntity
 {
@@ -63,6 +64,11 @@ class TaskMessageEntity extends AbstractEntity
     protected string $content = '';
 
     /**
+     * @var null|string 原始消息内容
+     */
+    protected ?string $rawContent = null;
+
+    /**
      * @var null|array 步骤信息
      */
     protected ?array $steps = null;
@@ -78,6 +84,11 @@ class TaskMessageEntity extends AbstractEntity
     protected ?array $attachments = null;
 
     /**
+     * @var null|array 提及信息
+     */
+    protected ?array $mentions = null;
+
+    /**
      * @var string 事件类型
      */
     protected string $event = '';
@@ -87,12 +98,14 @@ class TaskMessageEntity extends AbstractEntity
      */
     protected int $sendTimestamp = 0;
 
+    protected bool $showInUi = true;
+
     public function __construct(array $data = [])
     {
         $this->id = IdGenerator::getSnowId();
-        $this->messageId = (string) IdGenerator::getSnowId();
+        $this->messageId = isset($data['message_id']) ? (string) $data['message_id'] : (string) IdGenerator::getSnowId();
         $this->sendTimestamp = time();
-        $this->initProperty($data);
+        parent::__construct($data);
     }
 
     public function getId(): int
@@ -193,6 +206,17 @@ class TaskMessageEntity extends AbstractEntity
         return $this;
     }
 
+    public function getRawContent(): string
+    {
+        return $this->rawContent ?? '';
+    }
+
+    public function setRawContent(?string $rawContent): self
+    {
+        $this->rawContent = $rawContent;
+        return $this;
+    }
+
     public function getSteps(): ?array
     {
         return $this->steps;
@@ -226,6 +250,17 @@ class TaskMessageEntity extends AbstractEntity
         return $this;
     }
 
+    public function getMentions(): ?array
+    {
+        return $this->mentions;
+    }
+
+    public function setMentions(?array $mentions): self
+    {
+        $this->mentions = empty($mentions) ? null : $mentions;
+        return $this;
+    }
+
     public function getEvent(): string
     {
         return $this->event;
@@ -242,6 +277,17 @@ class TaskMessageEntity extends AbstractEntity
         return $this->sendTimestamp;
     }
 
+    public function getShowInUi(): bool
+    {
+        return $this->showInUi;
+    }
+
+    public function setShowInUi(bool $showInUi): self
+    {
+        $this->showInUi = $showInUi;
+        return $this;
+    }
+
     public function toArray(): array
     {
         $result = [
@@ -255,15 +301,45 @@ class TaskMessageEntity extends AbstractEntity
             'topic_id' => $this->topicId,
             'status' => $this->status,
             'content' => $this->content,
+            'raw_content' => $this->rawContent,
             'steps' => $this->steps,
             'tool' => $this->tool,
             'attachments' => $this->attachments,
+            'mentions' => $this->getMentions(),
             'event' => $this->event,
             'send_timestamp' => $this->sendTimestamp,
+            'show_in_ui' => $this->showInUi,
         ];
 
         return array_filter($result, function ($value) {
             return $value !== null;
         });
+    }
+
+    public static function taskMessageDTOToTaskMessageEntity(TaskMessageDTO $taskMessageDTO): TaskMessageEntity
+    {
+        $messageData = [
+            'task_id' => $taskMessageDTO->getTaskId(),
+            'sender_type' => $taskMessageDTO->getRole(),
+            'sender_uid' => $taskMessageDTO->getSenderUid(),
+            'receiver_uid' => $taskMessageDTO->getReceiverUid(),
+            'type' => $taskMessageDTO->getMessageType(),
+            'content' => $taskMessageDTO->getContent(),
+            'status' => $taskMessageDTO->getStatus(),
+            'steps' => $taskMessageDTO->getSteps(),
+            'tool' => $taskMessageDTO->getTool(),
+            'attachments' => $taskMessageDTO->getAttachments(),
+            'mentions' => $taskMessageDTO->getMentions(),
+            'topic_id' => $taskMessageDTO->getTopicId(),
+            'event' => $taskMessageDTO->getEvent(),
+            'show_in_ui' => $taskMessageDTO->isShowInUi(),
+        ];
+
+        // Add message_id if provided
+        if ($taskMessageDTO->getMessageId() !== null) {
+            $messageData['message_id'] = $taskMessageDTO->getMessageId();
+        }
+
+        return new TaskMessageEntity($messageData);
     }
 }

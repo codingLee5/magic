@@ -15,7 +15,6 @@ use App\Domain\Chat\Repository\Facade\MagicChatTopicRepositoryInterface;
 use App\Domain\Chat\Repository\Facade\MagicContactIdMappingRepositoryInterface;
 use App\Domain\Chat\Repository\Facade\MagicFriendRepositoryInterface;
 use App\Domain\Chat\Repository\Facade\MagicMessageRepositoryInterface;
-use App\Domain\Chat\Repository\Facade\MagicStreamMessageRepositoryInterface;
 use App\Domain\Chat\Repository\Persistence\MagicContactIdMappingRepository;
 use App\Domain\Contact\Repository\Facade\MagicAccountRepositoryInterface;
 use App\Domain\Contact\Repository\Facade\MagicDepartmentRepositoryInterface;
@@ -38,7 +37,6 @@ use Hyperf\Context\ApplicationContext;
 use Hyperf\Logger\LoggerFactory;
 use Hyperf\Redis\Redis;
 use Hyperf\Snowflake\IdGeneratorInterface;
-use Hyperf\SocketIOServer\SocketIO;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
@@ -56,14 +54,12 @@ abstract class AbstractContactDomainService
         protected MagicMessageRepositoryInterface $magicMessageRepository,
         protected MagicChatSeqRepositoryInterface $magicSeqRepository,
         protected MagicAccountRepositoryInterface $magicAccountRepository,
-        protected SocketIO $socketIO,
         protected MagicChatConversationRepositoryInterface $magicConversationRepository,
         protected RedisLocker $redisLocker,
         protected Producer $producer,
         protected MagicChatTopicRepositoryInterface $magicChatTopicRepository,
         protected MagicGroupRepositoryInterface $magicGroupRepository,
         protected MagicChatFileRepositoryInterface $magicFileRepository,
-        protected MagicStreamMessageRepositoryInterface $magicStreamMessageRepository,
         protected readonly MagicFriendRepositoryInterface $friendRepository,
         protected readonly MagicUserIdRelationRepositoryInterface $userIdRelationRepository,
         protected readonly MagicContactIdMappingRepositoryInterface $contactThirdPlatformIdMappingRepository,

@@ -12,9 +12,11 @@ import type { ReportFileUploadsResponse } from "@/opensource/apis/modules/file"
 import { InstructionGroupType, SystemInstructType } from "@/types/bot"
 import MagicEmojiNodeExtension from "@/opensource/components/base/MagicRichEditor/extensions/magicEmoji"
 import {
+	FileError,
 	fileToBase64,
 	isOnlyText,
 	transformJSONContent,
+	isValidImageFile,
 } from "@/opensource/components/base/MagicRichEditor/utils"
 import { Image } from "@/opensource/components/base/MagicRichEditor/extensions/image"
 import { observer } from "mobx-react-lite"
@@ -369,9 +371,9 @@ const MessageEditor = observer(function MessageEditor({
 		const imageFiles: File[] = []
 		const otherFiles: File[] = []
 
-		// 文件先分类: 图片和其他
+		// Categorize files: images and others using improved detection
 		for (let i = 0; i < fileList.length; i += 1) {
-			if (fileList[i].type.includes("image") && fileList[i].type !== "image/svg+xml") {
+			if (isValidImageFile(fileList[i])) {
 				imageFiles.push(fileList[i])
 			} else {
 				otherFiles.push(fileList[i])
@@ -772,6 +774,31 @@ const MessageEditor = observer(function MessageEditor({
 
 	const onClick = useMemoizedFn(() => editorRef.current?.editor?.chain().focus().run())
 
+	const handlePasteFileFail = useMemoizedFn((errors: FileError[]) => {
+		const fileList: FileData[] = []
+		errors.forEach((error) => {
+			switch (error.reason) {
+				case "size":
+					message.error(t("richEditor.fileTooLarge"))
+					break
+				case "invalidBase64":
+					message.error(t("richEditor.invalidBase64"))
+					break
+				case "type":
+					if (error.file && error.file instanceof File) {
+						fileList.push(genFileData(error.file as File))
+					}
+					break
+				default:
+					break
+			}
+		})
+
+		if (!errors.length && fileList.length) {
+			setFiles((prev) => [...prev, ...fileList])
+		}
+	})
+
 	const ChildrenRender = useMemoizedFn(({ className: inputClassName }) => {
 		return (
 			<>
@@ -787,6 +814,7 @@ const MessageEditor = observer(function MessageEditor({
 					onCompositionEnd={AiCompletionService.onCompositionEnd}
 					editorProps={editorProps}
 					enterBreak={sendWhenEnter}
+					onPasteFileFail={handlePasteFileFail}
 				/>
 				{openAiCompletion && <AiCompletionTip />}
 			</>

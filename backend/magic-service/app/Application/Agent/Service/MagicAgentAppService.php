@@ -104,6 +104,11 @@ class MagicAgentAppService extends AbstractAppService
         // 企业内部发布的
         $orgAgentIds = $this->magicAgentDomainService->getEnterpriseAvailableAgentIds($authorization->getOrganizationCode());
 
+        $contactDataIsolation = ContactDataIsolation::create($permissionDataIsolation->getCurrentOrganizationCode(), $permissionDataIsolation->getCurrentUserId());
+
+        // 过滤可见性
+        $userDepartmentIds = $this->magicDepartmentUserDomainService->getDepartmentIdsByUserId($contactDataIsolation, $permissionDataIsolation->getCurrentUserId(), true);
+
         $agentIds = array_values(array_unique(array_merge($selfAgentIds, $orgAgentIds)));
 
         $query->setIds($agentIds);
@@ -503,18 +508,6 @@ class MagicAgentAppService extends AbstractAppService
 
         // 修改助理本身状态
         $this->magicAgentDomainService->updateAgentStatus($agentId, $status->value);
-
-        // 修改版本状态
-        if ($status === MagicAgentVersionStatus::ENTERPRISE_DISABLED) {
-            $magicAgentEntity = $this->magicAgentDomainService->getAgentById($agentId);
-            if ($magicAgentEntity->getAgentVersionId() !== null) {
-                $magicAgentVersionEntity = $this->magicAgentVersionDomainService->getById($magicAgentEntity->getAgentVersionId());
-                // 只有审批通过和审核通过才可以被动关闭
-                if ($magicAgentVersionEntity->getApprovalStatus() === MagicAgentVersionStatus::APPROVAL_PASSED->value) {
-                    $this->magicAgentVersionDomainService->updateAgentEnterpriseStatus($magicAgentVersionEntity->getId(), MagicAgentVersionStatus::ENTERPRISE_UNPUBLISHED->value);
-                }
-            }
-        }
     }
 
     /**

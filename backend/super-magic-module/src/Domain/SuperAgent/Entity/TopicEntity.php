@@ -9,6 +9,7 @@ namespace Dtyq\SuperMagic\Domain\SuperAgent\Entity;
 
 use App\Infrastructure\Core\AbstractEntity;
 use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\TaskStatus;
+use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\TopicMode;
 use Throwable;
 
 /**
@@ -35,6 +36,11 @@ class TopicEntity extends AbstractEntity
      * @var int 工作区ID
      */
     protected int $workspaceId = 0;
+
+    /**
+     * @var int 项目ID
+     */
+    protected int $projectId = 0;
 
     /**
      * @var string Chat话题ID
@@ -77,6 +83,16 @@ class TopicEntity extends AbstractEntity
     protected string $taskMode = 'chat';
 
     /**
+     * @var null|TopicMode 话题模式
+     */
+    protected ?TopicMode $topicMode = null;
+
+    /**
+     * @var float 话题成本
+     */
+    protected float $cost = 0.0;
+
+    /**
      * @var null|int 当前任务ID
      */
     protected ?int $currentTaskId = null;
@@ -111,6 +127,13 @@ class TopicEntity extends AbstractEntity
      */
     protected string $updatedUid = '';
 
+    /**
+     * @var string commit hash
+     */
+    protected ?string $workspaceCommitHash = '';
+
+    protected ?string $chatHistoryCommitHash = '';
+
     public function __construct(array $data = [])
     {
         $this->initProperty($data);
@@ -126,6 +149,7 @@ class TopicEntity extends AbstractEntity
             'user_id' => $this->userId ?? 0,
             'user_organization_code' => $this->userOrganizationCode ?? '',
             'workspace_id' => $this->workspaceId ?? 0,
+            'project_id' => $this->projectId ?? 0,
             'chat_topic_id' => $this->chatTopicId ?? '',
             'chat_conversation_id' => $this->chatConversationId ?? '',
             'sandbox_id' => $this->sandboxId ?? '',
@@ -134,6 +158,8 @@ class TopicEntity extends AbstractEntity
             'topic_name' => $this->topicName ?? '',
             'description' => $this->description,
             'task_mode' => $this->taskMode ?? 'chat',
+            'topic_mode' => $this->topicMode->value ?? '',
+            'cost' => $this->cost ?? 0.0,
             'current_task_id' => $this->currentTaskId,
             'current_task_status' => $this->currentTaskStatus?->value,
             'created_at' => $this->createdAt,
@@ -141,6 +167,8 @@ class TopicEntity extends AbstractEntity
             'deleted_at' => $this->deletedAt,
             'created_uid' => $this->createdUid,
             'updated_uid' => $this->updatedUid,
+            'workspace_commit_hash' => $this->workspaceCommitHash,
+            'chat_history_commit_hash' => $this->chatHistoryCommitHash,
         ];
 
         // 移除null值
@@ -200,6 +228,22 @@ class TopicEntity extends AbstractEntity
         }
 
         $this->workspaceId = $workspaceId;
+        return $this;
+    }
+
+    public function getProjectId(): int
+    {
+        return $this->projectId;
+    }
+
+    public function setProjectId($projectId): self
+    {
+        // 当输入不是整数时进行转换
+        if (! is_int($projectId)) {
+            $projectId = (int) $projectId;
+        }
+
+        $this->projectId = $projectId;
         return $this;
     }
 
@@ -432,6 +476,79 @@ class TopicEntity extends AbstractEntity
     public function setTaskMode(string $taskMode): self
     {
         $this->taskMode = $taskMode;
+        return $this;
+    }
+
+    /**
+     * 获取话题模式.
+     */
+    public function getTopicMode(): ?TopicMode
+    {
+        return $this->topicMode ?? null;
+    }
+
+    /**
+     * 设置话题模式.
+     * @param mixed $topicMode
+     */
+    public function setTopicMode($topicMode): self
+    {
+        // 如果输入不是TopicMode类型但不为空，尝试转换
+        if ($topicMode !== null && ! ($topicMode instanceof TopicMode)) {
+            try {
+                $topicMode = TopicMode::from($topicMode);
+            } catch (Throwable $e) {
+                // 转换失败时设为默认值
+                $topicMode = null;
+            }
+        }
+
+        $this->topicMode = $topicMode ?? null;
+        return $this;
+    }
+
+    /**
+     * 获取话题成本.
+     */
+    public function getCost(): float
+    {
+        return $this->cost;
+    }
+
+    /**
+     * 设置话题成本.
+     * @param mixed $cost
+     */
+    public function setCost($cost): self
+    {
+        // 当输入不是浮点数时进行转换
+        if (! is_float($cost)) {
+            $cost = (float) $cost;
+        }
+
+        $this->cost = $cost;
+        return $this;
+    }
+
+    public function getWorkspaceCommitHash(): string
+    {
+        return $this->workspaceCommitHash;
+    }
+
+    public function setWorkspaceCommitHash(?string $workspaceCommitHash): self
+    {
+        $this->workspaceCommitHash = $workspaceCommitHash;
+        return $this;
+    }
+
+    public function getChatHistoryCommitHash(): string
+    {
+        return $this->chatHistoryCommitHash;
+    }
+
+    public function setChatHistoryCommitHash(?string $chatHistoryCommitHash): self
+    {
+        $this->chatHistoryCommitHash = $chatHistoryCommitHash;
         return $this;
     }
 }

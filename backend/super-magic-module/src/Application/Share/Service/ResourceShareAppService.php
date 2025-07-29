@@ -7,7 +7,6 @@ declare(strict_types=1);
 
 namespace Dtyq\SuperMagic\Application\Share\Service;
 
-use App\ErrorCode\ShareErrorCode;
 use App\Infrastructure\Core\Exception\BusinessException;
 use App\Infrastructure\Core\Exception\ExceptionBuilder;
 use App\Interfaces\Authorization\Web\MagicUserAuthorization;
@@ -16,6 +15,7 @@ use Dtyq\SuperMagic\Domain\Share\Constant\ResourceType;
 use Dtyq\SuperMagic\Domain\Share\Constant\ShareAccessType;
 use Dtyq\SuperMagic\Domain\Share\Entity\ResourceShareEntity;
 use Dtyq\SuperMagic\Domain\Share\Service\ResourceShareDomainService;
+use Dtyq\SuperMagic\ErrorCode\ShareErrorCode;
 use Dtyq\SuperMagic\Infrastructure\Utils\AccessTokenUtil;
 use Dtyq\SuperMagic\Infrastructure\Utils\PasswordCrypt;
 use Dtyq\SuperMagic\Interfaces\Share\Assembler\ShareAssembler;
@@ -40,7 +40,7 @@ class ResourceShareAppService extends AbstractShareAppService
         private ShareableResourceFactory $resourceFactory,
         private ResourceShareDomainService $shareDomainService,
         private ShareAssembler $shareAssembler,
-        readonly LoggerFactory $loggerFactory
+        public readonly LoggerFactory $loggerFactory
     ) {
         $this->logger = $loggerFactory->get(get_class($this));
     }
@@ -98,7 +98,7 @@ class ResourceShareAppService extends AbstractShareAppService
             );
         } catch (Exception $e) {
             $this->logger->error('保存话题分享失败，结果: ' . $e->getMessage());
-            ExceptionBuilder::throw(ShareErrorCode::SHARE_CREATE_RESOURCE_ERROR, 'share.create_resources_error', [$resourceId]);
+            ExceptionBuilder::throw(ShareErrorCode::CREATE_RESOURCES_ERROR, 'share.create_resources_error', [$resourceId]);
         }
 
         // 5. 构建响应
@@ -122,11 +122,24 @@ class ResourceShareAppService extends AbstractShareAppService
         return $this->shareDomainService->cancelShare($shareId, $userId, $organizationCode);
     }
 
+    public function cancelShareByResourceId(MagicUserAuthorization $userAuthorization, string $resourceId): bool
+    {
+        $userId = $userAuthorization->getId();
+        $organizationCode = $userAuthorization->getOrganizationCode();
+
+        $shareEntity = $this->shareDomainService->getShareByResourceId($resourceId);
+        if (is_null($shareEntity)) {
+            return false;
+        }
+        // 调用领域服务的取消分享方法
+        return $this->shareDomainService->cancelShare($shareEntity->getId(), $userId, $organizationCode);
+    }
+
     public function checkShare(?MagicUserAuthorization $userAuthorization, string $shareCode): array
     {
         $shareEntity = $this->shareDomainService->getShareByCode($shareCode);
         if (empty($shareEntity)) {
-            ExceptionBuilder::throw(ShareErrorCode::SHARE_NOT_FOUND, 'share.not_found', [$shareCode]);
+            ExceptionBuilder::throw(ShareErrorCode::RESOURCE_NOT_FOUND, 'share.not_found', [$shareCode]);
         }
         return [
             'has_password' => ! empty($shareEntity->getPassword()),
@@ -139,7 +152,7 @@ class ResourceShareAppService extends AbstractShareAppService
         // 先获取详情内容
         $shareEntity = $this->shareDomainService->getShareByCode($shareCode);
         if (empty($shareEntity)) {
-            ExceptionBuilder::throw(ShareErrorCode::SHARE_NOT_FOUND, 'share.not_found', [$shareCode]);
+            ExceptionBuilder::throw(ShareErrorCode::RESOURCE_NOT_FOUND, 'share.not_found', [$shareCode]);
         }
 
         // 校验权限，目前只有个人才有权限控制
@@ -150,7 +163,7 @@ class ResourceShareAppService extends AbstractShareAppService
 
         // 判断密码是否正确
         if (! empty($shareEntity->getPassword()) && ($detailDTO->getPassword() != PasswordCrypt::decrypt($shareEntity->getPassword()))) {
-            ExceptionBuilder::throw(ShareErrorCode::SHARE_PASSWORD_ERROR, 'share.password_error', [$shareCode]);
+            ExceptionBuilder::throw(ShareErrorCode::PASSWORD_ERROR, 'share.password_error', [$shareCode]);
         }
 
         // 调用工厂类，获取分 享内容数据
@@ -235,6 +248,9 @@ class ResourceShareAppService extends AbstractShareAppService
         // 获取并验证实体
         try {
             $shareEntity = $this->getAndValidateShareEntity($userAuthorization, $shareCode);
+            if ($shareEntity->getCreatedUid() !== $userAuthorization->getId()) {
+                ExceptionBuilder::throw(ShareErrorCode::PERMISSION_DENIED, 'share.permission_denied', [$shareCode]);
+            }
             // 使用装配器创建包含密码的DTO
             return $this->shareAssembler->toDtoWithPassword($shareEntity);
         } catch (BusinessException $e) {
@@ -268,7 +284,7 @@ class ResourceShareAppService extends AbstractShareAppService
 
         // 验证分享是否存在
         if (empty($shareEntity)) {
-            ExceptionBuilder::throw(ShareErrorCode::SHARE_NOT_FOUND, 'share.not_found', [$shareCode]);
+            ExceptionBuilder::throw(ShareErrorCode::RESOURCE_NOT_FOUND, 'share.not_found', [$shareCode]);
         }
 
         // 校验权限，如果分享类型是仅自己可见，则需要验证用户身份

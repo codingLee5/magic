@@ -481,8 +481,10 @@ class MagicChatAISearchV2AppService extends AbstractAppService
         // 深度搜索的总结使用 deepseek-r1 模型
         if ($dto->getSearchDeepLevel() === SearchDeepLevel::DEEP) {
             $modelInterface = $this->getChatModel($dto->getOrganizationCode(), LLMModelEnum::DEEPSEEK_R1->value);
-            $queryVo->setModel($modelInterface);
+        } else {
+            $modelInterface = $this->getChatModel($dto->getOrganizationCode());
         }
+        $queryVo->setModel($modelInterface);
         $summarizeCompletionResponse = $this->magicLLMDomainService->summarize($queryVo);
         // 流式响应
         $senderConversationEntity = $this->magicConversationDomainService->getConversationByIdWithoutCheck($dto->getConversationId());
@@ -887,7 +889,7 @@ class MagicChatAISearchV2AppService extends AbstractAppService
         return array_slice($rawHistoryMessages, -10);
     }
 
-    private function getChatModel(string $orgCode, string $modelName = LLMModelEnum::GPT_41->value): ModelInterface
+    private function getChatModel(string $orgCode, string $modelName = LLMModelEnum::DEEPSEEK_V3->value): ModelInterface
     {
         // 通过降级链获取模型名称
         $modelName = di(ModelConfigAppService::class)->getChatModelTypeByFallbackChain($orgCode, $modelName);

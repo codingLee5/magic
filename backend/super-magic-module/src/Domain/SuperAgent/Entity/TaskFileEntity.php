@@ -17,6 +17,8 @@ class TaskFileEntity extends AbstractEntity
 
     protected string $organizationCode = '';
 
+    protected int $projectId = 0;
+
     protected int $topicId = 0;
 
     protected int $taskId = 0;
@@ -33,9 +35,9 @@ class TaskFileEntity extends AbstractEntity
 
     protected string $externalUrl = '';
 
-    protected ?string $menu = null;
-
     protected string $storageType = 'workspace';
+
+    protected bool $isHidden = false;
 
     protected string $createdAt = '';
 
@@ -71,6 +73,16 @@ class TaskFileEntity extends AbstractEntity
     public function setOrganizationCode(string $organizationCode): void
     {
         $this->organizationCode = $organizationCode;
+    }
+
+    public function getProjectId(): int
+    {
+        return $this->projectId;
+    }
+
+    public function setProjectId(int $projectId): void
+    {
+        $this->projectId = $projectId;
     }
 
     public function getTopicId(): int
@@ -153,16 +165,6 @@ class TaskFileEntity extends AbstractEntity
         $this->externalUrl = $externalUrl;
     }
 
-    public function getMenu(): ?string
-    {
-        return $this->menu;
-    }
-
-    public function setMenu(?string $menu): void
-    {
-        $this->menu = $menu;
-    }
-
     public function getStorageType(): string
     {
         return $this->storageType;
@@ -171,6 +173,16 @@ class TaskFileEntity extends AbstractEntity
     public function setStorageType(string $storageType): void
     {
         $this->storageType = $storageType;
+    }
+
+    public function getIsHidden(): bool
+    {
+        return $this->isHidden;
+    }
+
+    public function setIsHidden(bool $isHidden): void
+    {
+        $this->isHidden = $isHidden;
     }
 
     public function getCreatedAt(): string
@@ -209,6 +221,7 @@ class TaskFileEntity extends AbstractEntity
             'file_id' => $this->fileId,
             'user_id' => $this->userId,
             'organization_code' => $this->organizationCode,
+            'project_id' => $this->projectId,
             'topic_id' => $this->topicId,
             'task_id' => $this->taskId,
             'file_type' => $this->fileType,
@@ -218,10 +231,10 @@ class TaskFileEntity extends AbstractEntity
             'file_size' => $this->fileSize,
             'external_url' => $this->externalUrl,
             'storage_type' => $this->storageType,
+            'is_hidden' => $this->isHidden,
             'created_at' => $this->createdAt,
             'updated_at' => $this->updatedAt,
             'deleted_at' => $this->deletedAt,
-            'menu' => $this->menu,
         ];
     }
 }

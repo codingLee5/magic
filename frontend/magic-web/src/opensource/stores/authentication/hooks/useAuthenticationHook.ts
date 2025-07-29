@@ -2,6 +2,7 @@ import { useMemoizedFn } from "ahooks"
 import { useClusterCode } from "@/opensource/providers/ClusterProvider"
 import { userStore } from "@/opensource/models/user"
 import { userService } from "@/services"
+import { BroadcastChannelSender } from "@/opensource/broadcastChannel"
 
 export function useAccount() {
 	const { setClusterCode } = useClusterCode()
@@ -18,14 +19,20 @@ export function useAccount() {
 				setClusterCode(account?.deployCode)
 			}
 			await userService.switchAccount(unionId, magic_user_id, magic_organization_code)
+			/** 广播切换账号 */
+			BroadcastChannelSender.switchAccount({
+				magicId: unionId,
+				magicUserId: magic_user_id,
+				magicOrganizationCode: magic_organization_code,
+			})
 		},
 	)
 
 	/**
 	 * @description 退出登录，不仅要销毁token，还需要移除帐号管理中的记录 (兼容指定 magicId 账号退出，不传则退出当前账号)
 	 */
-	const accountLogout = useMemoizedFn((magicId?: string) => {
-		userService.deleteAccount(magicId)
+	const accountLogout = useMemoizedFn(async (magicId?: string) => {
+		await userService.deleteAccount(magicId)
 	})
 
 	/** 账号初始化，每次应用初始化时都需要重新获取所有登录过账号的组织 */

@@ -15,7 +15,7 @@ use Hyperf\HttpServer\Contract\RequestInterface;
 class GetFileUrlsRequestDTO
 {
     /**
-     * 文件ID列表.
+     * List of file IDs.
      */
     private array $fileIds;
 
@@ -25,8 +25,15 @@ class GetFileUrlsRequestDTO
 
     private string $topicId;
 
+    private string $projectId;
+
     /**
-     * 构造函数.
+     * Cache setting, default is true.
+     */
+    private bool $cache;
+
+    /**
+     * Constructor.
      */
     public function __construct(array $params)
     {
@@ -34,6 +41,8 @@ class GetFileUrlsRequestDTO
         $this->token = $params['token'] ?? '';
         $this->downloadMode = $params['download_mode'] ?? 'download';
         $this->topicId = $params['topic_id'] ?? '';
+        $this->projectId = $params['project_id'] ?? '';
+        $this->cache = $params['cache'] ?? true;
 
         $this->validate();
     }
@@ -69,11 +78,22 @@ class GetFileUrlsRequestDTO
         return $this->topicId;
     }
 
+    public function getProjectId(): string
+    {
+        return $this->projectId;
+    }
+
+    public function getCache(): bool
+    {
+        return $this->cache;
+    }
+
     /**
      * 验证请求数据.
      *
      * @throws BusinessException 如果验证失败则抛出异常
      */
+    /* @phpstan-ignore-next-line */
     private function validate(): void
     {
         if (empty($this->fileIds)) {

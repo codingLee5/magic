@@ -235,7 +235,7 @@ class ConversationStore {
 		const conversation = this.conversations[conversationId]
 		if (!conversation) return
 
-		conversation.setLastReceiveMessage(message)
+		conversation.setLastReceiveMessageAndLastReceiveTime(message)
 	}
 
 	/**
@@ -592,6 +592,18 @@ class ConversationStore {
 				this.conversations[conversation.id] = new Conversation(conversation)
 			}
 		})
+	}
+
+	replaceConversations(filteredConversationList: ConversationFromService[]) {
+		const object: Record<string, Conversation> = {}
+		filteredConversationList.forEach((conversation) => {
+			object[conversation.id] = new Conversation({
+				...this.getConversation(conversation.id)?.toObject(),
+				...conversation,
+			})
+		})
+
+		this.conversations = object
 	}
 
 	reset() {

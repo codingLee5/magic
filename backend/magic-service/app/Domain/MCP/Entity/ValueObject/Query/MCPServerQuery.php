@@ -20,6 +20,8 @@ class MCPServerQuery extends AbstractQuery
 
     private ?array $codes = null;
 
+    private ?bool $withToolCount = null;
+
     public function getCodes(): ?array
     {
         return $this->codes;
@@ -27,7 +29,7 @@ class MCPServerQuery extends AbstractQuery
 
     public function setCodes(?array $codes): void
     {
-        $this->codes = $codes;
+        $this->codes = array_filter(array_unique($codes));
     }
 
     public function getName(): ?string
@@ -60,6 +62,17 @@ class MCPServerQuery extends AbstractQuery
     public function setEnabled(?bool $enabled): self
     {
         $this->enabled = $enabled;
+        return $this;
+    }
+
+    public function getWithToolCount(): ?bool
+    {
+        return $this->withToolCount;
+    }
+
+    public function setWithToolCount(?bool $withToolCount): self
+    {
+        $this->withToolCount = $withToolCount;
         return $this;
     }
 }

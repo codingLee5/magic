@@ -8,8 +8,8 @@ declare(strict_types=1);
 namespace Dtyq\SuperMagic\Application\SuperAgent\Service;
 
 use App\Application\Chat\Service\MagicChatMessageAppService;
+use App\Application\Chat\Service\MagicUserInfoAppService;
 use App\Application\File\Service\FileAppService;
-use App\Application\Kernel\SuperPermissionEnum;
 use App\Domain\Chat\Entity\Items\SeqExtra;
 use App\Domain\Chat\Entity\MagicSeqEntity;
 use App\Domain\Chat\Entity\ValueObject\ConversationType;
@@ -18,37 +18,54 @@ use App\Domain\Chat\Service\MagicChatFileDomainService;
 use App\Domain\Contact\Entity\ValueObject\DataIsolation;
 use App\Domain\Contact\Entity\ValueObject\UserType;
 use App\Domain\Contact\Service\MagicUserDomainService;
+use App\Domain\ModelGateway\Service\AccessTokenDomainService;
+use App\Domain\ModelGateway\Service\ApplicationDomainService;
 use App\ErrorCode\GenericErrorCode;
 use App\Infrastructure\Core\Exception\BusinessException;
+use App\Infrastructure\Core\Exception\EventException;
 use App\Infrastructure\Core\Exception\ExceptionBuilder;
-use App\Infrastructure\Util\Auth\PermissionChecker;
+use App\Infrastructure\Util\Context\CoContext;
 use App\Infrastructure\Util\IdGenerator\IdGenerator;
 use App\Infrastructure\Util\Locker\LockerInterface;
 use App\Interfaces\Authorization\Web\MagicUserAuthorization;
+use Dtyq\AsyncEvent\AsyncEventUtil;
+use Dtyq\SuperMagic\Application\SuperAgent\DTO\TaskMessageDTO;
+use Dtyq\SuperMagic\Application\SuperAgent\DTO\UserMessageDTO;
 use Dtyq\SuperMagic\Domain\SuperAgent\Constant\TaskFileType;
 use Dtyq\SuperMagic\Domain\SuperAgent\Entity\TaskEntity;
+use Dtyq\SuperMagic\Domain\SuperAgent\Entity\TaskMessageEntity;
+use Dtyq\SuperMagic\Domain\SuperAgent\Entity\TopicEntity;
 use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\ChatInstruction;
 use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\MessageMetadata;
 use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\MessagePayload;
 use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\MessageType;
 use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\TaskContext;
 use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\TaskStatus;
+use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\UserInfoValueObject;
+use Dtyq\SuperMagic\Domain\SuperAgent\Event\RunTaskAfterEvent;
+use Dtyq\SuperMagic\Domain\SuperAgent\Event\RunTaskBeforeEvent;
+use Dtyq\SuperMagic\Domain\SuperAgent\Event\RunTaskCallbackEvent;
 use Dtyq\SuperMagic\Domain\SuperAgent\Repository\Facade\TaskRepositoryInterface;
 use Dtyq\SuperMagic\Domain\SuperAgent\Service\MessageBuilderDomainService;
 use Dtyq\SuperMagic\Domain\SuperAgent\Service\TaskDomainService;
+use Dtyq\SuperMagic\Domain\SuperAgent\Service\TopicDomainService;
 use Dtyq\SuperMagic\Domain\SuperAgent\Service\WorkspaceDomainService;
+use Dtyq\SuperMagic\ErrorCode\SuperAgentErrorCode;
 use Dtyq\SuperMagic\Infrastructure\ExternalAPI\Sandbox\Config\WebSocketConfig;
 use Dtyq\SuperMagic\Infrastructure\ExternalAPI\Sandbox\SandboxResult;
 use Dtyq\SuperMagic\Infrastructure\ExternalAPI\Sandbox\SandboxStruct;
 use Dtyq\SuperMagic\Infrastructure\ExternalAPI\Sandbox\Volcengine\SandboxService;
-// use Dtyq\BillingManager\Service\QuotaService;
 use Dtyq\SuperMagic\Infrastructure\ExternalAPI\Sandbox\WebSocket\WebSocketSession;
+use Dtyq\SuperMagic\Infrastructure\Utils\TaskStatusValidator;
+use Dtyq\SuperMagic\Infrastructure\Utils\ToolProcessor;
 use Dtyq\SuperMagic\Interfaces\SuperAgent\DTO\TopicTaskMessageDTO;
 use Error;
 use Exception;
 use Hyperf\Codec\Json;
 use Hyperf\Coroutine\Coroutine;
+use Hyperf\Coroutine\Parallel;
 use Hyperf\Logger\LoggerFactory;
+use Hyperf\Odin\Message\Role;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
 use Throwable;
@@ -64,8 +81,10 @@ class TaskAppService extends AbstractAppService
 
     public function __construct(
         private readonly WorkspaceDomainService $workspaceDomainService,
+        private readonly TopicDomainService $topicDomainService,
         private readonly TaskDomainService $taskDomainService,
         private readonly MagicChatMessageAppService $chatMessageAppService,
+        private readonly MagicUserInfoAppService $userInfoAppService,
         private readonly MagicChatFileDomainService $chatFileDomainService,
         private readonly FileAppService $fileAppService,
         private readonly SandboxService $sandboxService,
@@ -73,7 +92,9 @@ class TaskAppService extends AbstractAppService
         protected MagicUserDomainService $userDomainService,
         protected TaskRepositoryInterface $taskRepository,
         protected LockerInterface $locker,
-        LoggerFactory $loggerFactory
+        LoggerFactory $loggerFactory,
+        protected AccessTokenDomainService $accessTokenDomainService,
+        protected ApplicationDomainService $applicationDomainService,
     ) {
         $this->messageBuilder = new MessageBuilderDomainService();
         $this->logger = $loggerFactory->get(get_class($this));
@@ -95,141 +116,135 @@ class TaskAppService extends AbstractAppService
         $topicId = 0;
         $taskId = '';
         try {
-            // 检查用户任务数量限制和白名单
-            if ($instruction != ChatInstruction::Interrupted && $instruction != ChatInstruction::FollowUp) {
-                // 检查环境变量，如果是开源版本则跳过白名单和任务数量限制检查
-                $magicEdition = env('MAGIC_EDITION', 'open-source');
-                if ($magicEdition === 'open-source') {
-                    $this->logger->info('开源版本，跳过白名单和任务数量限制检查');
-                } else {
-                    $userId = $dataIsolation->getCurrentUserId();
-
-                    $this->logger->info(sprintf(
-                        '检查用户userId: %s',
-                        $userId
-                    ));
-
-                    // 检查用户是否在白名单中
-                    $userPhoneNumber = $this->userDomainService->getUserPhoneByUserId($userId);
-
-                    $this->logger->info(sprintf(
-                        '检查用户手机号: %s',
-                        $userPhoneNumber
-                    ));
-
-                    $isOrganizationAdmin = false;
-                    $isInviteUser = false;
-                    $isSuperMagicBoardManager = false;
-                    $isSuperMagicBoardOperator = false;
-
-                    // 检查是否是组织拥有者或者管理员
-                    if (class_exists(PermissionChecker::class)) {
-                        $permissionChecker = make(PermissionChecker::class);
-                        $isOrganizationAdmin = $permissionChecker->isOrganizationAdmin($dataIsolation->getCurrentOrganizationCode(), $userPhoneNumber);
-
-                        // 检查是否是邀请用户
-                        $isInviteUser = PermissionChecker::mobileHasPermission($userPhoneNumber, SuperPermissionEnum::SUPER_INVITE_USER);
-
-                        // 检查是否是超级麦吉看板管理人员
-                        $isSuperMagicBoardManager = PermissionChecker::mobileHasPermission($userPhoneNumber, SuperPermissionEnum::SUPER_MAGIC_BOARD_ADMIN);
-
-                        // 检查是否是超级麦吉看板运营人员
-                        $isSuperMagicBoardOperator = PermissionChecker::mobileHasPermission($userPhoneNumber, SuperPermissionEnum::SUPER_MAGIC_BOARD_OPERATOR);
-                    }
-
-                    if (! $isOrganizationAdmin && ! $isInviteUser && ! $isSuperMagicBoardManager && ! $isSuperMagicBoardOperator) {
-                        // 根据header 判断返回中文还是英文
-                        ExceptionBuilder::throw(GenericErrorCode::IllegalOperation, '十分抱歉，目前您暂未获得内测资格。还请您密切留意我们发布的邀请内测相关信息，以便及时获取内测资格。');
-                    }
-
-                    // 获取配置的任务数量限制
-                    $defaultTaskLimit = 3;
-
-                    // 获取当前用户正在运行的任务数量@
-                    $runningTasks = $this->taskRepository->getTasksByUserId($userId, ['task_status' => TaskStatus::RUNNING->value]);
-                    // 根据sandbox_id进行去重
-                    $uniqueSandboxIds = [];
-                    $uniqueRunningTasks = [];
-                    foreach ($runningTasks as $task) {
-                        $sandboxId = $task->getSandboxId();
-                        if (! empty($sandboxId) && ! in_array($sandboxId, $uniqueSandboxIds)) {
-                            $uniqueSandboxIds[] = $sandboxId;
-                            $uniqueRunningTasks[] = $task;
-                        }
-                    }
-                    if (count($uniqueRunningTasks) > $defaultTaskLimit) {
-                        ExceptionBuilder::throw(GenericErrorCode::IllegalOperation, '您正在执行的任务数量已达到上限（' . $defaultTaskLimit . '个），请稍后再试');
-                    }
-                }
+            $topicEntity = $this->topicDomainService->getTopicByChatTopicId($dataIsolation, $chatTopicId);
+            if (is_null($topicEntity)) {
+                ExceptionBuilder::throw(SuperAgentErrorCode::TOPIC_NOT_FOUND, 'topic.topic_not_found');
             }
-
-            // 1. 初始化任务
-            $taskEntity = $this->taskDomainService->initTopicTask($dataIsolation, $chatTopicId, $instruction, $taskMode, $prompt, $attachments);
-            $topicId = $taskEntity->getTopicId();
-            $taskId = $taskEntity->getId();
-
-            // 2. 记录用户发送的消息
-            $attachmentsArr = is_null($attachments) ? [] : json_decode($attachments, true);
-            $this->taskDomainService->recordUserMessage(
-                (string) $taskEntity->getId(),
-                $dataIsolation->getCurrentUserId(),
-                $agentUserId,
-                $prompt,
-                null,
-                $taskEntity->getTopicId(),
-                '',
-                $attachmentsArr
+            $topicId = $topicEntity->getId();
+            // 检查用户任务数量限制和白名单
+            $this->beforeInitTask($dataIsolation, $instruction, $topicEntity);
+            // 初始化任务
+            $userMessageDTO = new UserMessageDTO(
+                agentUserId: $agentUserId,
+                chatConversationId: $conversationId,
+                chatTopicId: $chatTopicId,
+                topicId: $topicId,
+                prompt: $prompt,
+                attachments: $attachments,
+                mentions: null,
+                instruction: $instruction,
+                taskMode: $taskMode
             );
 
-            // 2.1 处理用户上传的附件 (使用FileProcessAppService)
-            $this->fileProcessAppService->processInitialAttachments($attachments, $taskEntity, $dataIsolation);
-
-            // 3. 初始化沙箱环境
-            // 没有沙箱id，那么一定是首次任务
-            $isFirstTaskMessage = empty($taskEntity->getSandboxId());
-            // 判断是否为沙箱模式
-            $isSandboxMode = config('super-magic.sandbox.enabled', true);
-            if ($isSandboxMode) {
-                /** @var bool $isInitConfig */
-                [$isInitConfig, $sandboxId] = $this->initSandbox($taskEntity->getSandboxId());
-                if (empty($sandboxId)) {
-                    $this->taskDomainService->updateTaskStatus(
-                        dataIsolation: $dataIsolation,
-                        topicId: $taskEntity->getTopicId(),
-                        status: TaskStatus::ERROR,
-                        id: $taskEntity->getId(),
-                        taskId: $taskEntity->getTaskId(),
-                        sandboxId: $sandboxId
-                    );
-                    throw new BusinessException('创建沙箱失败', 500);
-                }
-                $this->logger->info(sprintf('创建沙箱成功: %s', $sandboxId));
-            } else {
-                // 否则使用话题 id 当沙箱id
-                $sandboxId = ! empty($taskEntity->getSandboxId()) ? $taskEntity->getSandboxId() : (string) $taskEntity->getTopicId();
-                $isInitConfig = true;
+            // Get task mode from DTO, fallback to topic's task mode if empty
+            $taskMode = $userMessageDTO->getTaskMode();
+            if ($taskMode === '') {
+                $taskMode = $topicEntity->getTaskMode();
             }
-            $taskEntity->setSandboxId($sandboxId);
+            $data = [
+                'user_id' => $dataIsolation->getCurrentUserId(),
+                'workspace_id' => $topicEntity->getWorkspaceId(),
+                'project_id' => $topicEntity->getProjectId(),
+                'topic_id' => $topicId,
+                'task_id' => '', // Initially empty, this is agent's task id
+                'task_mode' => $taskMode,
+                'sandbox_id' => $topicEntity->getSandboxId(), // Current task prioritizes reusing previous topic's sandbox id
+                'prompt' => $userMessageDTO->getPrompt(),
+                'attachments' => $userMessageDTO->getAttachments(),
+                'mentions' => $userMessageDTO->getMentions(),
+                'task_status' => TaskStatus::WAITING->value,
+                'work_dir' => $topicEntity->getWorkDir() ?? '',
+                'created_at' => date('Y-m-d H:i:s'),
+                'updated_at' => date('Y-m-d H:i:s'),
+            ];
 
-            // 获取任务ID
-            $taskId = $taskEntity->getTaskId();
+            $taskEntity = TaskEntity::fromArray($data);
 
-            // 4. 创建任务上下文
+            // Initialize task
+            $taskEntity = $this->taskDomainService->initTopicTask(
+                dataIsolation: $dataIsolation,
+                topicEntity: $topicEntity,
+                taskEntity: $taskEntity
+            );
+
+            $taskEntity = $this->taskDomainService->initTopicTask($dataIsolation, $topicEntity, $taskEntity);
+            $taskId = (string) $taskEntity->getId();
+
+            // 初始化上下文
             $taskContext = new TaskContext(
                 $taskEntity,
                 $dataIsolation,
                 $conversationId,
                 $chatTopicId,
                 $agentUserId,
-                $sandboxId,
+                $topicEntity->getSandboxId(),
                 $taskId,
                 $instruction,
             );
 
+            // 如果是中断指令，直接发送中断指令
+            if ($instruction == ChatInstruction::Interrupted) {
+                $this->sendInternalMessageToSandbox($taskContext, $topicEntity);
+                return $taskId;
+            }
+
+            // 其余指令都是对话信息
+            // 处理用户发送的信息
+            // 记录用户发送的消息
+            $attachmentsArr = is_null($attachments) ? [] : json_decode($attachments, true);
+
+            // Create TaskMessageDTO for user message
+            $taskMessageDTO = new TaskMessageDTO(
+                taskId: (string) $taskEntity->getId(),
+                role: Role::User->value,
+                senderUid: $dataIsolation->getCurrentUserId(),
+                receiverUid: $agentUserId,
+                messageType: 'chat',
+                content: $prompt,
+                status: null,
+                steps: null,
+                tool: null,
+                topicId: $taskEntity->getTopicId(),
+                event: '',
+                attachments: $attachmentsArr,
+                mentions: null,
+                showInUi: true,
+                messageId: null
+            );
+
+            $taskMessageEntity = TaskMessageEntity::taskMessageDTOToTaskMessageEntity($taskMessageDTO);
+
+            $this->taskDomainService->recordTaskMessage($taskMessageEntity);
+            // 处理用户上传的附件
+            $this->fileProcessAppService->processInitialAttachments($attachments, $taskEntity, $dataIsolation);
+
+            // 初始化沙箱环境
+            // 没有沙箱id，那么一定是首次任务
+            $isFirstTaskMessage = empty($taskEntity->getSandboxId());
+            /** @var bool $isInitConfig */
+            [$isInitConfig, $sandboxId] = $this->initSandbox($taskEntity->getSandboxId());
+            if (empty($sandboxId)) {
+                $this->updateTaskStatus(
+                    $taskEntity,
+                    $dataIsolation,
+                    $taskEntity->getTaskId(),
+                    TaskStatus::ERROR,
+                    '创建沙箱失败'
+                );
+                throw new BusinessException('创建沙箱失败', 500);
+            }
+            $this->logger->info(sprintf('创建沙箱成功: %s', $sandboxId));
+            $taskEntity->setSandboxId($sandboxId);
+            // 设置任务状态为等待中
+            $this->updateTaskStatus($taskEntity, $dataIsolation, $taskId, TaskStatus::WAITING);
+            $taskContext->setSandboxId($sandboxId);
+
             // 5. 启动协程处理WebSocket通信
-            Coroutine::create(function () use ($taskContext, $isInitConfig, $isFirstTaskMessage) {
+            $requestId = CoContext::getOrSetRequestId();
+            Coroutine::create(function () use ($taskContext, $isInitConfig, $isFirstTaskMessage, $requestId) {
                 try {
-                    $this->processWebSocketCommunication($taskContext, $isInitConfig, $isFirstTaskMessage);
+                    CoContext::setRequestId($requestId);
+                    $this->sendChatMessageToSandbox($taskContext, $isInitConfig, $isFirstTaskMessage);
                 } catch (Throwable $e) {
                     $this->logger->error(sprintf(
                         'WebSocket通信处理异常: %s, 任务ID: %s',
@@ -248,6 +263,14 @@ class TaskAppService extends AbstractAppService
             });
 
             return $taskContext->getTaskId();
+        } catch (EventException $e) {
+            $this->logger->error(sprintf(
+                '初始化任务, 事件处理失败: %s',
+                $e->getMessage()
+            ));
+            // 发送消息给客户端
+            $this->sendErrorMessageToClient($topicId, $taskId, $chatTopicId, $conversationId, $e->getMessage());
+            throw new BusinessException('初始化任务, 事件处理失败', 500);
         } catch (Throwable $e) {
             $this->logger->error(sprintf(
                 '初始化任务失败: %s',
@@ -264,83 +287,211 @@ class TaskAppService extends AbstractAppService
         }
     }
 
+    public function beforeInitTask(DataIsolation $dataIsolation, ChatInstruction $instruction, TopicEntity $topicEntity): void
+    {
+        if ($instruction == ChatInstruction::Interrupted) {
+            return;
+        }
+
+        $topicEntities = $this->topicDomainService->getUserRunningTopics($dataIsolation);
+        $currentTaskRunCount = count($topicEntities); // 原始数量，假设都在运行
+
+        if ($currentTaskRunCount > 0) {
+            // Use coroutines to concurrently check real sandbox status
+            $parallel = new Parallel(10);
+            $requestId = CoContext::getOrSetRequestId();
+
+            foreach ($topicEntities as $index => $topicEntityItem) {
+                $parallel->add(function () use ($topicEntityItem, $requestId) {
+                    CoContext::setRequestId($requestId);
+                    // Check real sandbox status and return 1 if not running (need to subtract)
+                    $realStatus = $this->updateTaskStatusFromSandbox($topicEntityItem);
+                    return $realStatus !== TaskStatus::RUNNING ? 1 : 0;
+                }, (string) $index);
+            }
+
+            try {
+                $results = $parallel->wait();
+                // Subtract non-running topics from total count
+                foreach ($results as $needSubtract) {
+                    $currentTaskRunCount -= $needSubtract;
+                }
+            } catch (Throwable $e) {
+                $this->logger->error(sprintf('Failed to check real task status concurrently: %s', $e->getMessage()));
+                // Fallback: use original count without real status check
+            }
+        }
+
+        $taskRound = $this->taskDomainService->getTaskNumByTopicId($topicEntity->getId());
+        AsyncEventUtil::dispatch(new RunTaskBeforeEvent($dataIsolation->getCurrentOrganizationCode(), $dataIsolation->getCurrentUserId(), $topicEntity->getId(), $taskRound, $currentTaskRunCount, []));
+        $this->logger->info(sprintf('投递任务开始事件，话题id：%s, round: %d, currentTaskRunCount: %d (after real status check)', $topicEntity->getId(), $taskRound, $currentTaskRunCount));
+    }
+
+    public function updateTaskStatusFromSandbox(TopicEntity $topicEntity): TaskStatus
+    {
+        $this->logger->info(sprintf('开始检查任务状态: topic_id=%s', $topicEntity->getId()));
+        if (! $topicEntity->getSandboxId()) {
+            return TaskStatus::WAITING;
+        }
+
+        // 调用SandboxService的getStatus接口获取容器状态
+        $result = $this->sandboxService->getStatus($topicEntity->getSandboxId());
+
+        // 如果沙箱存在且状态为 running，直接返回该沙箱
+        if ($result->getCode() === SandboxResult::Normal
+            && $result->getSandboxData()->getStatus() === SandboxResult::SandboxRunnig) {
+            $this->logger->info(sprintf('沙箱状态正常(running): sandboxId=%s', $topicEntity->getSandboxId()));
+            return TaskStatus::RUNNING;
+        }
+
+        // 记录需要创建新沙箱的原因
+        if ($result->getCode() === SandboxResult::NotFound) {
+            $errMsg = '沙箱不存在';
+        } elseif ($result->getCode() === SandboxResult::Normal
+            && $result->getSandboxData()->getStatus() === 'exited') {
+            $errMsg = '沙箱已经退出';
+        } else {
+            $errMsg = '沙箱异常';
+        }
+
+        // 获取当前任务
+        $taskId = $topicEntity->getCurrentTaskId();
+        if ($taskId) {
+            // 更新任务状态
+            $this->taskDomainService->updateTaskStatusByTaskId($taskId, TaskStatus::ERROR, $errMsg);
+        }
+
+        // 更新话题状态
+        $this->topicDomainService->updateTopicStatus($topicEntity->getId(), $taskId, $topicEntity->getSandboxId(), TaskStatus::ERROR);
+
+        // 触发完成事件
+        AsyncEventUtil::dispatch(new RunTaskAfterEvent(
+            $topicEntity->getUserOrganizationCode(),
+            $topicEntity->getUserId(),
+            $topicEntity->getId(),
+            $taskId,
+            TaskStatus::ERROR->value,
+            null
+        ));
+
+        $this->logger->info(sprintf('结束检查任务状态: topic_id=%s, status=%s, error_msg=%s', $topicEntity->getId(), TaskStatus::ERROR->value, $errMsg));
+
+        return TaskStatus::ERROR;
+    }
+
+    /**
+     * 发送终止任务信息.
+     * @throws Throwable
+     */
+    public function sendInternalMessageToSandbox(TaskContext $taskContext, TopicEntity $topicEntity, string $msg = ''): void
+    {
+        $text = empty($msg) ? '任务已终止.' : $msg;
+        // 检查沙箱是否存在
+        if (empty($topicEntity->getSandboxId())) {
+            $this->logger->info('沙箱id不存在，直接更新任务状态');
+            $this->updateTaskStatus($taskContext->getTask(), $taskContext->getDataIsolation(), $taskContext->getTaskId(), TaskStatus::Suspended, '沙箱id不存在，直接更新任务状态');
+            $this->sendErrorMessageToClient($topicEntity->getId(), (string) $taskContext->getTask()->getId(), $taskContext->getChatTopicId(), $taskContext->getChatConversationId(), $text);
+            return;
+        }
+        // 调用远程查询沙箱是否存在
+        $result = $this->sandboxService->checkSandboxExists($topicEntity->getSandboxId());
+        if ($result->getCode() == SandboxResult::NotFound || $result?->getSandboxData()?->getStatus() == SandboxResult::SandboxExited) {
+            $this->logger->info('沙箱不存在或者退出，直接更新任务状态');
+            $this->updateTaskStatus($taskContext->getTask(), $taskContext->getDataIsolation(), $taskContext->getTaskId(), TaskStatus::Suspended, '沙箱不存在或者退出，直接更新任务状态');
+            $this->sendErrorMessageToClient($topicEntity->getId(), (string) $taskContext->getTask()->getId(), $taskContext->getChatTopicId(), $taskContext->getChatConversationId(), $text);
+        }
+        // 如果沙箱存在，构建 websocket 通道进行打通
+        $websocketSession = $this->getSandboxWebsocketClient($taskContext);
+        if (is_null($websocketSession)) {
+            throw new BusinessException('获取沙箱websocket客户端失败', 500);
+        }
+        try {
+            // 设置打断指令
+            $taskContext->getTask()->setPrompt('终止任务');
+            $taskContext->setInstruction(ChatInstruction::Interrupted);
+            $message = $this->messageBuilder->buildInterruptMessage(
+                $taskContext->getCurrentUserId(),
+                $taskContext->getTask()->getId(),
+                $taskContext->getTask()->getTaskMode(),
+                $msg
+            );
+            $this->sendMessageToSandbox($websocketSession, $taskContext->getTask()->getId(), $message);
+        } catch (Exception $e) {
+            $this->logger->error(sprintf('终止沙箱任务信息失败，错误内容为: %s', $e->getMessage()));
+            throw new BusinessException('发送终止任务失败', 500);
+        } finally {
+            $websocketSession->disconnect();
+        }
+    }
+
     /**
      * 处理话题任务消息.
      *
      * @param TopicTaskMessageDTO $messageDTO 消息DTO
      */
-    public function handleTopicTaskMessage($messageDTO): void
+    public function handleTopicTaskMessage(TopicTaskMessageDTO $messageDTO): void
     {
-        // 获取sandboxId用于锁定
-        $sandboxId = $messageDTO->getMetadata()?->getSandboxId();
-        if (empty($sandboxId)) {
-            $this->logger->warning('缺少有效的sandboxId，无法加锁保证消息顺序性', [
-                'message_id' => $messageDTO->getPayload()?->getMessageId(),
-                'message' => $messageDTO->toArray(),
-            ]);
+        $this->logger->info(sprintf(
+            '开始处理话题任务消息，task_id: %s , 消息内容为: %s',
+            $messageDTO->getPayload()->getTaskId() ?? '',
+            json_encode($messageDTO->toArray(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+        ));
+        // 创建数据隔离对象
+        $dataIsolation = DataIsolation::create(
+            $messageDTO->getMetadata()->getOrganizationCode(),
+            $messageDTO->getMetadata()->getUserId()
+        );
+        // 处理消息前分发事件
+        $topicEntity = $this->topicDomainService->getTopicByChatTopicId($dataIsolation, $messageDTO->getMetadata()->getChatTopicId());
+        if (is_null($topicEntity)) {
+            throw new RuntimeException(sprintf('根据chat话题 id: %s 未找到话题信息', $messageDTO->getMetadata()->getChatTopicId()));
         }
 
-        $lockKey = 'handle_sandbox_message_lock:' . $sandboxId;
-        $lockOwner = IdGenerator::getUniqueId32(); // 使用唯一ID作为锁持有者标识
-        $lockExpireSeconds = 30; // 锁的过期时间（秒），消息处理可能需要更长时间
-        $lockAcquired = false;
+        // 获取任务信息
+        $taskEntity = $this->taskDomainService->getTaskById($topicEntity->getCurrentTaskId());
+        if (is_null($taskEntity)) {
+            throw new RuntimeException(sprintf('根据任务 id: %s 未找到任务信息', $topicEntity->getCurrentTaskId() ?? ''));
+        }
+
+        // 创建任务上下文
+        $taskContext = new TaskContext(
+            task: $taskEntity,
+            dataIsolation: $dataIsolation,
+            chatConversationId: $messageDTO->getMetadata()?->getChatConversationId(),
+            chatTopicId: $messageDTO->getMetadata()?->getChatTopicId(),
+            agentUserId: $messageDTO->getMetadata()?->getAgentUserId(),
+            sandboxId: $messageDTO->getMetadata()?->getSandboxId(),
+            taskId: $messageDTO->getPayload()?->getTaskId(),
+            instruction: ChatInstruction::tryFrom($messageDTO->getMetadata()?->getInstruction()) ?? ChatInstruction::Normal
+        );
 
         try {
-            // 如果有有效的sandboxId，尝试获取分布式互斥锁
-            if (! empty($sandboxId)) {
-                $lockAcquired = $this->locker->mutexLock($lockKey, $lockOwner, $lockExpireSeconds);
-
-                if (! $lockAcquired) {
-                    $this->logger->warning(sprintf(
-                        '无法获取sandbox %s的锁，该sandbox可能有其他消息正在处理中，message_id: %s',
-                        $sandboxId,
-                        $messageDTO->getPayload()?->getMessageId()
-                    ));
-                    // 可以选择将消息重新入队或实现延迟重试策略
-                    return;
-                }
-
-                $this->logger->debug(sprintf('已获取sandbox %s的锁，持有者: %s', $sandboxId, $lockOwner));
-            }
-
-            $this->logger->info(sprintf(
-                '开始处理话题任务消息，task_id: %s , 消息内容为: %s',
-                $messageDTO->getPayload()->getTaskId() ?? '',
-                json_encode($messageDTO->toArray(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-            ));
-
-            // 构建任务上下文
-            // 获取任务信息
-            $taskEntity = $this->taskDomainService->getTaskById((int) $messageDTO->getMetadata()->getSuperMagicTaskId() ?? '');
-            if (is_null($taskEntity)) {
-                throw new RuntimeException(sprintf('根据任务 id: %s 未找到任务信息', $messageDTO->getPayload()->getTaskId() ?? ''));
-            }
-
-            // 创建数据隔离对象
-            $dataIsolation = DataIsolation::create(
-                $messageDTO->getMetadata()->getOrganizationCode(),
-                $messageDTO->getMetadata()->getUserId()
-            );
-
-            // 创建任务上下文
-            $taskContext = new TaskContext(
-                task: $taskEntity,
-                dataIsolation: $dataIsolation,
-                chatConversationId: $messageDTO->getMetadata()?->getChatConversationId(),
-                chatTopicId: $messageDTO->getMetadata()?->getChatTopicId(),
-                agentUserId: $messageDTO->getMetadata()?->getAgentUserId(),
-                sandboxId: $messageDTO->getMetadata()?->getSandboxId(),
-                taskId: $messageDTO->getPayload()?->getTaskId(),
-                instruction: ChatInstruction::tryFrom($messageDTO->getMetadata()?->getInstruction()) ?? ChatInstruction::Normal
-            );
-
             // 处理接收到的消息
-            $this->handleReceivedMessage($messageDTO->getPayload(), $taskContext);
+            $this->handleReceivedMessage($messageDTO, $taskContext);
+
+            // 处理任务状态
+            $status = $messageDTO->getPayload()->getStatus();
+            $taskStatus = TaskStatus::tryFrom($status) ?? TaskStatus::ERROR;
+            if (TaskStatus::tryFrom($status)) {
+                $this->updateTaskStatus($taskContext->getTask(), $taskContext->getDataIsolation(), $taskContext->getTaskId(), $taskStatus);
+            }
+
+            AsyncEventUtil::dispatch(new RunTaskCallbackEvent(
+                $taskContext->getCurrentOrganizationCode(),
+                $taskContext->getCurrentUserId(),
+                $taskContext->getTopicId(),
+                $topicEntity->getTopicName(),
+                $taskContext->getTask()->getId(),
+                $messageDTO
+            ));
 
             $this->logger->info(sprintf(
                 '处理话题任务消息完成，message_id: %s',
                 $messageDTO->getPayload()->getMessageId()
             ));
+        } catch (EventException $e) {
+            $this->logger->error(sprintf('处理消息事件回调的过程出现异常: %s', $e->getMessage()));
+            $this->sendInternalMessageToSandbox($taskContext, $topicEntity, $e->getMessage());
         } catch (Throwable $e) {
             $this->logger->error(sprintf(
                 '处理话题任务消息异常: %s, message_id: %s',
@@ -350,31 +501,100 @@ class TaskAppService extends AbstractAppService
                 'exception' => $e,
                 'message' => $messageDTO->toArray(),
             ]);
-        } finally {
-            // 如果获取了锁，确保释放它
-            if ($lockAcquired) {
-                if ($this->locker->release($lockKey, $lockOwner)) {
-                    $this->logger->debug(sprintf('已释放sandbox %s的锁，持有者: %s', $sandboxId, $lockOwner));
-                } else {
-                    // 记录释放锁失败的情况，可能需要人工干预
-                    $this->logger->error(sprintf('释放sandbox %s的锁失败，持有者: %s，可能需要人工干预', $sandboxId, $lockOwner));
-                }
-            }
         }
     }
 
     /**
-     * 处理WebSocket通信
+     * 获取分布式互斥锁.
+     *
+     * @param string $lockKey 锁的键名
+     * @param string $lockOwner 锁的持有者
+     * @param int $lockExpireSeconds 锁的过期时间（秒）
+     * @return bool 是否成功获取锁
      */
-    private function processWebSocketCommunication(
-        TaskContext $taskContext,
-        bool $isInitConfig,
-        bool $isFirstTaskMessage,
-    ): void {
+    public function acquireLock(string $lockKey, string $lockOwner, int $lockExpireSeconds): bool
+    {
+        return $this->locker->mutexLock($lockKey, $lockOwner, $lockExpireSeconds);
+    }
+
+    /**
+     * 释放分布式互斥锁.
+     *
+     * @param string $lockKey 锁的键名
+     * @param string $lockOwner 锁的持有者
+     * @return bool 是否成功释放锁
+     */
+    public function releaseLock(string $lockKey, string $lockOwner): bool
+    {
+        return $this->locker->release($lockKey, $lockOwner);
+    }
+
+    public function sendContinueMessageToSandbox(string $sandboxId, bool $isInit = false): bool
+    {
+        // 通过沙箱id
+        $topicEntity = $this->topicDomainService->getTopicBySandboxId($sandboxId);
+        if (is_null($topicEntity)) {
+            throw new RuntimeException(sprintf('根据沙箱 id: %s 未找到话题信息', $sandboxId));
+        }
+
+        // 创建数据隔离对象
+        $dataIsolation = DataIsolation::create(
+            $topicEntity->getUserOrganizationCode(),
+            $topicEntity->getUserId(),
+        );
+
+        // 获取任务信息
+        $taskEntity = $this->taskDomainService->getTaskById($topicEntity->getCurrentTaskId());
+        if (is_null($taskEntity)) {
+            throw new RuntimeException(sprintf('根据任务 id: %s 未找到任务信息', $topicEntity->getCurrentTaskId() ?? ''));
+        }
+
+        $taskContext = new TaskContext(
+            task: $taskEntity,
+            dataIsolation: $dataIsolation,
+            chatConversationId: $topicEntity->getChatConversationId(),
+            chatTopicId: $topicEntity->getChatTopicId(),
+            agentUserId: '',
+            sandboxId: $sandboxId,
+            taskId: (string) $taskEntity->getId(),
+            instruction: ChatInstruction::FollowUp
+        );
+        // 通过沙箱 id 查询当前
+        $session = $this->getSandboxWebsocketClient($taskContext);
+        if (is_null($session)) {
+            throw new BusinessException('获取沙箱websocket客户端失败');
+        }
+
+        // 发送初始化消息
+        if ($isInit) {
+            $this->initTaskMessageToSandbox($session, $taskContext, false);
+        }
+        $chatMessage = $this->messageBuilder->buildContinueMessage(
+            $dataIsolation->getCurrentUserId(),
+            $taskContext->getChatConversationId(),
+        );
+
+        $this->sendMessageToSandbox($session, $taskEntity->getId(), $chatMessage);
+
+        return true;
+    }
+
+    /**
+     * Summary of getTaskById.
+     */
+    public function getTaskById(int $taskId): ?TaskEntity
+    {
+        return $this->taskDomainService->getTaskById($taskId);
+    }
+
+    /**
+     * 获取 websocket 客户端廉价.
+     */
+    private function getSandboxWebsocketClient(TaskContext $taskContext): ?WebSocketSession
+    {
         $config = new WebSocketConfig();
         $task = $taskContext->getTask();
         $sandboxId = $taskContext->getSandboxId();
-        $dataIsolation = $taskContext->getDataIsolation();
         $wsUrl = $this->sandboxService->getWebsocketUrl($sandboxId);
 
         // 打印连接参数
@@ -393,18 +613,53 @@ class TaskAppService extends AbstractAppService
         );
 
         try {
-            // 建立连接
             $session->connect();
+            return $session;
+        } catch (Exception $e) {
+            $this->logger->error(sprintf(
+                'WebSocket连接失败，URL: %s，错误信息: %s',
+                $wsUrl,
+                $e->getMessage()
+            ));
+            return null;
+        }
+    }
+
+    /**
+     * 处理WebSocket通信
+     */
+    private function sendChatMessageToSandbox(
+        TaskContext $taskContext,
+        bool $isInitConfig,
+        bool $isFirstTaskMessage,
+    ): void {
+        // 建立连接
+        $session = $this->getSandboxWebsocketClient($taskContext);
+        if (is_null($session)) {
+            throw new BusinessException('获取沙箱websocket客户端失败');
+        }
+        try {
             // 发送初始化消息
             if ($isInitConfig) {
                 $this->initTaskMessageToSandbox($session, $taskContext, $isFirstTaskMessage);
             }
             // 发送聊天消息
-            $taskId = $this->sendChatMessageToSandbox($session, $taskContext);
+            $dataIsolation = $taskContext->getDataIsolation();
+            $task = $taskContext->getTask();
+            $attachmentUrls = $this->getAttachmentUrls($task->getAttachments(), $dataIsolation->getCurrentOrganizationCode());
+            $chatMessage = $this->messageBuilder->buildChatMessage(
+                $dataIsolation->getCurrentUserId(),
+                $task->getId(),
+                $taskContext->getInstruction()->value,
+                $task->getPrompt(),
+                $attachmentUrls,
+                $task->getTaskMode()
+            );
+            $taskId = $this->sendMessageToSandbox($session, $task->getId(), $chatMessage);
             // 初始化成功后，更新状态为 running
-            $task->setTaskId($taskId);
+            $taskContext->getTask()->setTaskId($taskId);
             // 更新任务为执行状态
-            $this->updateTaskStatus($task, $dataIsolation, $taskId, TaskStatus::RUNNING);
+            $this->updateTaskStatus($taskContext->getTask(), $taskContext->getDataIsolation(), $taskId, TaskStatus::RUNNING);
             // 这里取一个配置，是否需要进入 websocket 循环
             $mode = config('super-magic.sandbox.pull_message_mode');
             // websocket 模式，将持续等待
@@ -414,12 +669,11 @@ class TaskAppService extends AbstractAppService
         } catch (Throwable $e) {
             $this->logger->error(sprintf('WebSocket会话异常: %s', $e->getMessage()), [
                 'exception' => $e,
-                'task_id' => $task->getTaskId(),
-                'sandbox_id' => $task->getSandboxId(),
-                'ws_url' => $wsUrl,
+                'task_id' => $taskContext->getTask()->getTaskId(),
+                'sandbox_id' => $taskContext->getTask()->getSandboxId(),
             ]);
-            $this->updateTaskStatus($task, $dataIsolation, $taskContext->getTaskId(), TaskStatus::ERROR, $e->getMessage());
-            $this->sendErrorMessageToClient($task->getTopicId(), (string) $task->getId(), $taskContext->getChatTopicId(), $taskContext->getChatConversationId(), '系统繁忙，请稍后重试');
+            $this->updateTaskStatus($taskContext->getTask(), $taskContext->getDataIsolation(), $taskContext->getTaskId(), TaskStatus::ERROR, $e->getMessage());
+            $this->sendErrorMessageToClient($taskContext->getTask()->getTopicId(), (string) $taskContext->getTask()->getId(), $taskContext->getChatTopicId(), $taskContext->getChatConversationId(), '远程服务器连接失败，请稍后重试');
             throw $e;
         } finally {
             // 确保连接被关闭
@@ -427,13 +681,13 @@ class TaskAppService extends AbstractAppService
                 $session->disconnect();
                 $this->logger->info(sprintf(
                     'WebSocket会话关闭成功，任务ID: %s',
-                    $task->getTaskId()
+                    $taskContext->getTaskId()
                 ));
             } catch (Throwable $e) {
                 $this->logger->warning(sprintf(
                     '关闭WebSocket连接失败，错误: %s，任务ID: %s',
                     $e->getMessage(),
-                    $task->getTaskId()
+                    $taskContext->getTaskId()
                 ));
             }
         }
@@ -449,6 +703,19 @@ class TaskAppService extends AbstractAppService
             $task->getWorkDir()
         );
 
+        // 获取用户信息
+        $userInfo = null;
+        try {
+            $userInfoArray = $this->userInfoAppService->getUserInfo($dataIsolation->getCurrentUserId(), $dataIsolation);
+            $userInfo = UserInfoValueObject::fromArray($userInfoArray);
+        } catch (Throwable $e) {
+            $this->logger->warning(sprintf(
+                '获取用户信息失败: %s, 用户ID: %s',
+                $e->getMessage(),
+                $dataIsolation->getCurrentUserId()
+            ));
+        }
+
         // 使用值对象替代原始数组
         $messageMetadata = new MessageMetadata(
             agentUserId: $taskContext->getAgentUserId(),
@@ -459,6 +726,7 @@ class TaskAppService extends AbstractAppService
             instruction: $taskContext->getInstruction()->value,
             sandboxId: $taskContext->getSandboxId(),
             superMagicTaskId: (string) $task->getId(),
+            userInfo: $userInfo
         );
 
         $topicEntity = $this->workspaceDomainService->getTopicById($task->getTopicId());
@@ -505,22 +773,10 @@ class TaskAppService extends AbstractAppService
         return $payload->getTaskId();
     }
 
-    private function sendChatMessageToSandbox(WebSocketSession $session, TaskContext $taskContext): string
+    private function sendMessageToSandbox(WebSocketSession $session, int $taskId, array $chatMessage): string
     {
-        $dataIsolation = $taskContext->getDataIsolation();
-        $task = $taskContext->getTask();
-
-        $attachmentUrls = $this->getAttachmentUrls($task->getAttachments(), $dataIsolation->getCurrentOrganizationCode());
-        $chatMessage = $this->messageBuilder->buildChatMessage(
-            $dataIsolation->getCurrentUserId(),
-            $task->getId(),
-            $taskContext->getInstruction()->value,
-            $task->getPrompt(),
-            $attachmentUrls,
-            $task->getTaskMode()
-        );
         $session->send($chatMessage);
-        $this->logger->info(sprintf('[Send to Sandbox Chat Message] task_id: %s, data: %s', $task->getTaskId(), json_encode($chatMessage, JSON_UNESCAPED_UNICODE)));
+        $this->logger->info(sprintf('[Send to Sandbox Chat Message] task_id: %d, data: %s', $taskId, json_encode($chatMessage, JSON_UNESCAPED_UNICODE)));
 
         // 等待响应
         $message = $session->receive(60);
@@ -529,8 +785,8 @@ class TaskAppService extends AbstractAppService
         }
 
         $this->logger->info(sprintf(
-            '[Receive from Sandbox Chat Message] task_id: %s, data: %s',
-            $task->getTaskId(),
+            '[Receive from Sandbox Chat Message] task_id: %d, data: %s',
+            $taskId,
             json_encode($message, JSON_UNESCAPED_UNICODE)
         ));
 
@@ -609,7 +865,7 @@ class TaskAppService extends AbstractAppService
                 $taskContext->setTaskId($messageDTO->getPayload()->getTaskId() ?: $task->getTaskId());
 
                 // 处理消息并判断是否需要继续处理
-                $shouldContinue = $this->handleReceivedMessage($messageDTO->getPayload(), $taskContext);
+                $shouldContinue = $this->handleReceivedMessage($messageDTO, $taskContext);
                 if (! $shouldContinue) {
                     $this->logger->info('[任务已经完成] task_id: ' . $taskContext->getTaskId());
                     break; // 如果是终止消息，退出循环
@@ -636,12 +892,13 @@ class TaskAppService extends AbstractAppService
     /**
      * 处理接收到的消息.
      *
-     * @param MessagePayload $payload 消息负载值对象
+     * @param TopicTaskMessageDTO $messageDTO 消息
      * @param TaskContext $taskContext 任务上下文
      * @return bool 是否继续处理消息
      */
-    private function handleReceivedMessage(MessagePayload $payload, TaskContext $taskContext): bool
+    private function handleReceivedMessage(TopicTaskMessageDTO $messageDTO, TaskContext $taskContext): bool
     {
+        $payload = $messageDTO->getPayload();
         // 1. 解析消息基本信息
         $messageType = $payload->getType() ?: 'unknown';
         $content = $payload->getContent();
@@ -651,6 +908,8 @@ class TaskAppService extends AbstractAppService
         $event = $payload->getEvent();
         $attachments = $payload->getAttachments() ?? [];
         $projectArchive = $payload->getProjectArchive() ?? [];
+        $showInUi = $payload->getShowInUi() ?? true;
+        $messageId = $payload->getMessageId();
 
         // 2. 处理未知消息类型
         if (! MessageType::isValid($messageType)) {
@@ -670,67 +929,73 @@ class TaskAppService extends AbstractAppService
 
         // 3. 处理工具附件（如果有）
         try {
-            if ($tool !== null && ! empty($tool['attachments'])) {
+            if (! empty($tool['attachments'])) {
                 $this->processToolAttachments($tool, $taskContext);
-                // 处理完附件后，检查是否需要特殊处理browser工具
-                $this->matchFileIdForBrowserTool($tool);
+                // 使用工具处理器处理文件ID匹配
+                ToolProcessor::processToolAttachments($tool);
             }
 
             // 处理消息附件
-            $this->proecessMessageAttachments($attachments, $taskContext);
+            $this->processMessageAttachments($attachments, $taskContext);
 
             // 每个状态需要做一些特殊处理
             if ($status === TaskStatus::Suspended->value) {
                 $this->pauseTaskSteps($steps);
             } elseif ($status === TaskStatus::FINISHED->value) {
-                $this->getOutputContent($taskContext, $attachments, $tool);
+                // 使用工具处理器生成输出内容工具
+                $outputTool = ToolProcessor::generateOutputContentTool($attachments);
+                if ($outputTool !== null) {
+                    $tool = $outputTool;
+                }
             }
 
             // 4. 记录AI消息
             $task = $taskContext->getTask();
-            $this->taskDomainService->recordAiMessage(
-                (string) $task->getId(),
-                $taskContext->getAgentUserId(),
-                $task->getUserId(),
-                $messageType,
-                $content,
-                $status,
-                $steps,
-                $tool,
-                $task->getTopicId(),
-                $event,
-                $attachments
-            );
 
-            // 5. 发送消息到客户端
-            $this->sendMessageToClient(
-                topicId: $task->getTopicId(),
+            // Create TaskMessageDTO for AI message
+            $taskMessageDTO = new TaskMessageDTO(
                 taskId: (string) $task->getId(),
-                chatTopicId: $taskContext->getChatTopicId(),
-                chatConversationId: $taskContext->getChatConversationId(),
-                content: $content,
+                role: Role::Assistant->value,
+                senderUid: $taskContext->getAgentUserId(),
+                receiverUid: $task->getUserId(),
                 messageType: $messageType,
+                content: $content,
                 status: $status,
-                event: $event,
                 steps: $steps,
                 tool: $tool,
-                attachments: $attachments
+                topicId: $task->getTopicId(),
+                event: $event,
+                attachments: $attachments,
+                mentions: null,
+                showInUi: $showInUi,
+                messageId: $messageId
             );
 
-            // 6. 判断是否需要继续处理
-            $taskStatus = TaskStatus::tryFrom($status) ?? TaskStatus::ERROR;
-            if (TaskStatus::tryFrom($status)) {
-                $this->updateTaskStatus($taskContext->getTask(), $taskContext->getDataIsolation(), $taskContext->getTaskId(), $taskStatus);
+            $taskMessageEntity = TaskMessageEntity::taskMessageDTOToTaskMessageEntity($taskMessageDTO);
+
+            $this->taskDomainService->recordTaskMessage($taskMessageEntity);
+
+            // 5. 发送消息到客户端
+            if ($showInUi) {
+                $this->sendMessageToClient(
+                    topicId: $task->getTopicId(),
+                    taskId: (string) $task->getId(),
+                    chatTopicId: $taskContext->getChatTopicId(),
+                    chatConversationId: $taskContext->getChatConversationId(),
+                    content: $content,
+                    messageType: $messageType,
+                    status: $status,
+                    event: $event,
+                    steps: $steps,
+                    tool: $tool,
+                    attachments: $attachments
+                );
             }
-            if (in_array($status, [TaskStatus::ERROR->value, TaskStatus::FINISHED->value, TaskStatus::Suspended->value])) {
-                return true;
-            }
+            return true;
         } catch (Exception $e) {
             $this->logger->error(sprintf('处理消息的过程出现异常: %s', $e->getMessage()));
             return true;
         }
-
-        return true;
     }
 
     private function pauseTaskSteps(array &$steps): void
@@ -744,91 +1009,6 @@ class TaskAppService extends AbstractAppService
                 // 前端暂停的样式
                 $steps[$key]['status'] = TaskStatus::Suspended->value;
             }
-        }
-    }
-
-    private function getOutputContent(TaskContext $taskContext, array $attachments, ?array &$tool)
-    {
-        if (empty($attachments)) {
-            return;
-        }
-
-        $file = [];
-        $htmlFiles = [];
-        $mdFiles = [];
-
-        // 首先将文件按类型分组
-        foreach ($attachments as $attachment) {
-            $extension = strtolower($attachment['file_extension'] ?? '');
-            if ($extension === 'html') {
-                $htmlFiles[] = $attachment;
-            } elseif ($extension === 'md') {
-                $mdFiles[] = $attachment;
-            }
-        }
-
-        // 优先处理HTML文件
-        if (! empty($htmlFiles)) {
-            // 检查是否有包含关键词的HTML文件
-            $finalHtmlFiles = array_filter($htmlFiles, function ($item) {
-                $filename = strtolower($item['filename']);
-                return strpos($filename, 'final') !== false || strpos($filename, 'report') !== false;
-            });
-
-            if (! empty($finalHtmlFiles)) {
-                // 如果有多个包含关键词的文件，选择最大的
-                $file = $this->getMaxSizeFile($finalHtmlFiles);
-            } else {
-                // 如果没有包含关键词的文件，选择最大的HTML文件
-                $file = $this->getMaxSizeFile($htmlFiles);
-            }
-        }
-        // 如果没有HTML文件，处理MD文件
-        elseif (! empty($mdFiles)) {
-            // 检查是否有包含关键词的MD文件
-            $finalMdFiles = array_filter($mdFiles, function ($item) {
-                $filename = strtolower($item['filename']);
-                return strpos($filename, 'final') !== false || strpos($filename, 'report') !== false;
-            });
-
-            if (! empty($finalMdFiles)) {
-                // 如果有多个包含关键词的文件，选择最大的
-                $file = $this->getMaxSizeFile($finalMdFiles);
-            } else {
-                // 如果没有包含关键词的文件，选择最大的MD文件
-                $file = $this->getMaxSizeFile($mdFiles);
-            }
-        }
-
-        if (! empty($file)) {
-            // 获取文件URL
-            $fileLink = $this->fileAppService->getLink(
-                $taskContext->getDataIsolation()->getCurrentOrganizationCode(),
-                $file['file_key']
-            );
-            if (empty($fileLink)) {
-                // 如果获取URL失败，跳过
-                return;
-            }
-            $fileUrl = $fileLink->getUrl();
-            // 读取文件内容，放到 content 中
-            $content = file_get_contents($fileUrl);
-            $tool = [
-                'id' => (string) IdGenerator::getSnowId(),
-                'name' => 'finish_task',
-                'action' => '已完成结果文件的输出',
-                'detail' => [
-                    // 如果文件类型是 html 就使用 html , 如果文件类型是 md 就使用 md, 其他为 text
-                    'type' => $file['file_extension'] === 'html' ? 'html' : ($file['file_extension'] === 'md' ? 'md' : 'text'),
-                    'data' => [
-                        'file_name' => $file['filename'],
-                        'content' => $content,
-                    ],
-                ],
-                'remark' => '',
-                'status' => 'finished',
-                'attachments' => [],
-            ];
         }
     }
 
@@ -988,7 +1168,7 @@ class TaskAppService extends AbstractAppService
 
                 // 如果沙箱存在且状态为 running，直接返回该沙箱
                 if ($result->getCode() === SandboxResult::Normal
-                    && $result->getSandboxData()->getStatus() === 'running') {
+                    && $result->getSandboxData()->getStatus() === SandboxResult::SandboxRunnig) {
                     $this->logger->info(sprintf('沙箱状态正常(running)，直接使用: sandboxId=%s', $sandboxId));
                     return [false, $sandboxId]; // 不需要初始化配置
                 }
@@ -997,7 +1177,7 @@ class TaskAppService extends AbstractAppService
                 if ($result->getCode() === SandboxResult::NotFound) {
                     $this->logger->info(sprintf('沙箱不存在，需创建新沙箱: sandboxId=%s', $sandboxId));
                 } elseif ($result->getCode() === SandboxResult::Normal
-                           && $result->getSandboxData()->getStatus() === 'exited') {
+                           && $result->getSandboxData()->getStatus() === SandboxResult::SandboxExited) {
                     $this->logger->info(sprintf('沙箱状态为 exited，需创建新沙箱: sandboxId=%s', $sandboxId));
                 } else {
                     $this->logger->info(sprintf(
@@ -1058,6 +1238,24 @@ class TaskAppService extends AbstractAppService
         string $errMsg = ''
     ): void {
         try {
+            // 获取当前任务状态进行校验
+            $currentTask = $this->taskDomainService->getTaskById($task->getId());
+            $currentStatus = $currentTask?->getStatus();
+
+            // 使用工具类验证状态转换
+            if (! TaskStatusValidator::isTransitionAllowed($currentStatus, $status)) {
+                $reason = TaskStatusValidator::getRejectReason($currentStatus, $status);
+                $this->logger->warning('拒绝状态更新', [
+                    'task_id' => $taskId,
+                    'current_status' => $currentStatus->value ?? null,
+                    'new_status' => $status->value,
+                    'reason' => $reason,
+                    'error_msg' => $errMsg,
+                ]);
+                return; // 静默拒绝更新
+            }
+
+            // 执行状态更新
             $this->taskDomainService->updateTaskStatus(
                 dataIsolation: $dataIsolation,
                 topicId: $task->getTopicId(),
@@ -1068,18 +1266,20 @@ class TaskAppService extends AbstractAppService
                 errMsg: $errMsg
             );
 
-            // 记录日志
-            $this->logger->info(sprintf(
-                '任务状态更新完成，任务ID: %s，状态: %s',
-                $taskId,
-                $status->value
-            ));
+            // 记录成功日志
+            $this->logger->info('任务状态更新完成', [
+                'task_id' => $taskId,
+                'previous_status' => $currentStatus->value ?? null,
+                'new_status' => $status->value,
+                'error_msg' => $errMsg,
+            ]);
         } catch (Throwable $e) {
-            $this->logger->error(sprintf(
-                '更新任务状态失败：%s, 任务ID: %s',
-                $e->getMessage(),
-                $taskId
-            ));
+            $this->logger->error('更新任务状态失败', [
+                'task_id' => $taskId,
+                'status' => $status->value,
+                'error' => $e->getMessage(),
+                'error_msg' => $errMsg,
+            ]);
             throw $e;
         }
     }
@@ -1107,23 +1307,102 @@ class TaskAppService extends AbstractAppService
      */
     private function processToolAttachments(?array &$tool, TaskContext $taskContext): void
     {
-        if (empty($tool) || empty($tool['attachments'])) {
+        if (empty($tool)) {
             return;
         }
 
         $task = $taskContext->getTask();
         $dataIsolation = $taskContext->getDataIsolation();
 
-        for ($i = 0; $i < count($tool['attachments']); ++$i) {
-            $tool['attachments'][$i] = $this->processSingleAttachment(
-                $tool['attachments'][$i],
-                $task,
-                $dataIsolation
-            );
+        // 处理工具内容存储到对象存储
+        $this->processToolContentStorage($tool, $taskContext);
+
+        // 处理工具附件
+        if (! empty($tool['attachments'])) {
+            foreach ($tool['attachments'] as $i => $iValue) {
+                $tool['attachments'][$i] = $this->processSingleAttachment(
+                    $iValue,
+                    $task,
+                    $dataIsolation
+                );
+            }
         }
     }
 
-    private function proecessMessageAttachments(?array &$attachments, TaskContext $taskContext): void
+    /**
+     * 处理工具内容存储到对象存储.
+     *
+     * @param array $tool 工具数组（引用传递）
+     * @param TaskContext $taskContext 任务上下文
+     */
+    private function processToolContentStorage(array &$tool, TaskContext $taskContext): void
+    {
+        // 检查是否启用对象存储
+        $objectStorageEnabled = config('super-magic.task.tool_message.object_storage_enabled', true);
+        if (! $objectStorageEnabled) {
+            return;
+        }
+
+        // 检查工具内容
+        $content = $tool['detail']['data']['content'] ?? '';
+        if (empty($content)) {
+            return;
+        }
+
+        // 检查内容长度是否达到阈值
+        $minContentLength = config('super-magic.task.tool_message.min_content_length', 200);
+        if (strlen($content) < $minContentLength) {
+            return;
+        }
+
+        $this->logger->info(sprintf(
+            '开始处理工具内容存储，工具ID: %s，内容长度: %d',
+            $tool['id'] ?? 'unknown',
+            strlen($content)
+        ));
+
+        try {
+            // 构建参数
+            $fileName = $tool['detail']['data']['file_name'] ?? 'tool_content.txt';
+            $fileExtension = pathinfo($fileName, PATHINFO_EXTENSION) ?: 'txt';
+            $fileKey = ($tool['id'] ?? 'unknown') . '.' . $fileExtension;
+            $task = $taskContext->getTask();
+            $workDir = rtrim($task->getWorkdir(), '/') . '/task_' . $task->getId() . '/.chat/';
+
+            // 调用FileProcessAppService保存内容
+            $fileId = $this->fileProcessAppService->saveToolMessageContent(
+                fileName: $fileName,
+                workDir: $workDir,
+                fileKey: $fileKey,
+                content: $content,
+                dataIsolation: $taskContext->getDataIsolation(),
+                projectId: $task->getProjectId(),
+                topicId: $task->getTopicId(),
+                taskId: (int) $task->getId()
+            );
+
+            // 修改工具数据结构
+            $tool['detail']['data']['file_id'] = (string) $fileId;
+            $tool['detail']['data']['content'] = ''; // 清空内容
+
+            $this->logger->info(sprintf(
+                '工具内容存储完成，工具ID: %s，文件ID: %d，原内容长度: %d',
+                $tool['id'] ?? 'unknown',
+                $fileId,
+                strlen($content)
+            ));
+        } catch (Throwable $e) {
+            $this->logger->error(sprintf(
+                '工具内容存储失败: %s，工具ID: %s，内容长度: %d',
+                $e->getMessage(),
+                $tool['id'] ?? 'unknown',
+                strlen($content)
+            ));
+            // 存储失败不影响主流程，只记录错误
+        }
+    }
+
+    private function processMessageAttachments(?array &$attachments, TaskContext $taskContext): void
     {
         if (empty($attachments)) {
             return;
@@ -1132,9 +1411,9 @@ class TaskAppService extends AbstractAppService
         $task = $taskContext->getTask();
         $dataIsolation = $taskContext->getDataIsolation();
 
-        for ($i = 0; $i < count($attachments); ++$i) {
+        foreach ($attachments as $i => $iValue) {
             $attachments[$i] = $this->processSingleAttachment(
-                $attachments[$i],
+                $iValue,
                 $task,
                 $dataIsolation
             );
@@ -1167,6 +1446,7 @@ class TaskAppService extends AbstractAppService
                 $attachment['file_key'],
                 $dataIsolation,
                 $attachment,
+                $task->getProjectId(),
                 $task->getTopicId(),
                 (int) $task->getId(),
                 $attachment['file_tag'] ?? TaskFileType::PROCESS->value
@@ -1194,33 +1474,6 @@ class TaskAppService extends AbstractAppService
     }
 
     /**
-     * 为浏览器工具匹配file_id
-     * 特殊处理：当工具类型为browser且有file_key但没有file_id时(兼容前端的情况).
-     */
-    private function matchFileIdForBrowserTool(?array &$tool): void
-    {
-        // 如果工具为空、不是浏览器类型、没有附件，或已有file_id，则不处理
-        if (empty($tool) || empty($tool['attachments'])) {
-            return;
-        }
-        if (empty($tool['detail']) || empty($tool['detail']['type']) || $tool['detail']['type'] !== 'browser' || empty($tool['detail']['data'])) {
-            return;
-        }
-        if (empty($tool['detail']['data']['file_key'])) {
-            return;
-        }
-
-        // 从附件中查找匹配file_key的file_id
-        $fileKey = $tool['detail']['data']['file_key'];
-        foreach ($tool['attachments'] as $attachment) {
-            if (! empty($attachment['file_key']) && $attachment['file_key'] === $fileKey && ! empty($attachment['file_id'])) {
-                $tool['detail']['data']['file_id'] = $attachment['file_id'];
-                break; // 找到匹配项后立即退出循环
-            }
-        }
-    }
-
-    /**
      * 从WebSocket接收到的消息转换为统一消息格式.
      *
      * @param array $message WebSocket接收到的消息
@@ -1236,25 +1489,5 @@ class TaskAppService extends AbstractAppService
 
         // 创建DTO
         return new TopicTaskMessageDTO($metadata, $payload);
-    }
-
-    /**
-     * 从文件数组中获取最大尺寸的文件.
-     *
-     * @param array $files 文件数组
-     * @return null|array 最大尺寸的文件，如果数组为空则返回null
-     */
-    private function getMaxSizeFile(array $files)
-    {
-        if (empty($files)) {
-            return null;
-        }
-
-        return array_reduce($files, function ($carry, $item) {
-            if ($carry === null || (int) ($item['file_size'] ?? 0) > (int) ($carry['file_size'] ?? 0)) {
-                return $item;
-            }
-            return $carry;
-        });
     }
 }

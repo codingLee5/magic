@@ -358,6 +358,7 @@
 		"filePreview": {
 			"notFoundFile": "The file was not found",
 			"notSupport": "Preview is not supported yet",
+			"notSupportFileType": "This file type is not supported yet",
 			"title": "File preview"
 		},
 		"floatButton": {
@@ -1003,7 +1004,7 @@
 		},
 		"appAuth": "Application Authorization",
 		"changeInfo": "Modify information",
-		"emptyTips": "No ${title} added yet",
+		"emptyTips": "No {{title}} added yet",
 		"flow": "process",
 		"flowInput": "Process input parameters",
 		"hasToolsNum": "Contains ${num} tools",
@@ -1123,7 +1124,9 @@
 			"NotSupport": "Not supported yet",
 			"groupDisbanded": {
 				"content": "This group has been disbanded"
-			}
+			},
+			"loadingMoreMessages": "Loading more messages...",
+			"switchingConversation": "Switching conversation..."
 		},
 		"drive": {
 			"modal": {}
@@ -1332,5 +1335,13 @@
 		"alwayUsedApplication": "Common applications",
 		"collapse": "close",
 		"noCollapse": "Expand"
+	},
+	"markdownTable": {
+		"showMore": "Detail",
+		"rowDetails": "Row Details",
+		"clickToExpand": "Click to expand full content",
+		"showAllColumns": "Show All",
+		"hideAllColumns": "Hide",
+		"defaultColumn": "Column"
 	}
 }

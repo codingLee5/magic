@@ -26,16 +26,19 @@ class TaskContext
      * @param string $sandboxId 沙箱ID
      * @param string $taskId 任务ID
      * @param ChatInstruction $instruction 聊天指令
+     * @param string $agentMode Agent模式
      */
     public function __construct(
-        private readonly TaskEntity $task,
+        private TaskEntity $task,
         private readonly DataIsolation $dataIsolation,
         private readonly string $chatConversationId,
         private readonly string $chatTopicId,
         private readonly string $agentUserId,
-        private readonly string $sandboxId = '',
+        private string $sandboxId = '',
         private string $taskId = '',
-        private readonly ChatInstruction $instruction = ChatInstruction::Normal,
+        private ChatInstruction $instruction = ChatInstruction::Normal,
+        private string $agentMode = '',
+        private array $mcpConfig = [],
     ) {
     }
 
@@ -120,6 +123,14 @@ class TaskContext
     }
 
     /**
+     * 获取项目ID.
+     */
+    public function getProjectId(): int
+    {
+        return $this->task->getProjectId();
+    }
+
+    /**
      * 获取当前用户ID.
      */
     public function getCurrentUserId(): string
@@ -144,6 +155,19 @@ class TaskContext
     }
 
     /**
+     * 获取Agent模式.
+     */
+    public function getAgentMode(): string
+    {
+        return $this->agentMode;
+    }
+
+    public function getMcpConfig(): array
+    {
+        return $this->mcpConfig;
+    }
+
+    /**
      * 创建一个带有新任务但保留其他参数的上下文.
      */
     public function withTask(TaskEntity $newTask): self
@@ -157,12 +181,38 @@ class TaskContext
             $this->sandboxId,
             $this->taskId,
             $this->instruction,
+            $this->agentMode,
+            $this->mcpConfig,
         );
     }
 
     public function setTaskId(string $taskId): self
     {
         $this->taskId = $taskId;
+        return $this;
+    }
+
+    public function setSandboxId(string $sandboxId): self
+    {
+        $this->sandboxId = $sandboxId;
+        return $this;
+    }
+
+    public function setInstruction(ChatInstruction $instruction): self
+    {
+        $this->instruction = $instruction;
+        return $this;
+    }
+
+    public function setAgentMode(string $agentMode): self
+    {
+        $this->agentMode = $agentMode;
+        return $this;
+    }
+
+    public function setMcpConfig(array $mcpConfig): self
+    {
+        $this->mcpConfig = $mcpConfig;
         return $this;
     }
 }

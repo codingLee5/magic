@@ -16,6 +16,7 @@ use Dtyq\SuperMagic\Interfaces\Share\DTO\Request\GetShareDetailDTO;
 use Dtyq\SuperMagic\Interfaces\Share\DTO\Request\ResourceListRequestDTO;
 use Exception;
 use Hyperf\HttpServer\Contract\RequestInterface;
+use Qbhy\HyperfAuth\AuthManager;
 
 #[ApiResponse('low_code')]
 class ShareApi extends AbstractApi
@@ -55,13 +56,13 @@ class ShareApi extends AbstractApi
      * @throws BusinessException 如果参数无效或操作失败则抛出异常
      * @throws Exception
      */
-    public function cancelShare(RequestContext $requestContext, string $id): array
+    public function cancelShareByResourceId(RequestContext $requestContext, string $id): array
     {
         // 设置用户授权信息
         $requestContext->setUserAuthorization($this->getAuthorization());
         $userAuthorization = $requestContext->getUserAuthorization();
 
-        $this->shareAppService->cancelShare($userAuthorization, (int) $id);
+        $this->shareAppService->cancelShareByResourceId($userAuthorization, $id);
 
         return [
             'id' => $id,
@@ -72,7 +73,7 @@ class ShareApi extends AbstractApi
     {
         // 尝试获取用户信息，但是有可能是访问，所以会为 null
         try {
-            $requestContext->setUserAuthorization($this->getAuthorization());
+            $requestContext->setUserAuthorization(di(AuthManager::class)->guard(name: 'web')->user());
             $userAuthorization = $requestContext->getUserAuthorization();
         } catch (Exception $exception) {
             $userAuthorization = null;
@@ -84,7 +85,7 @@ class ShareApi extends AbstractApi
     {
         // 尝试获取用户信息，但是有可能是访问，所以会为 null
         try {
-            $requestContext->setUserAuthorization($this->getAuthorization());
+            $requestContext->setUserAuthorization(di(AuthManager::class)->guard(name: 'web')->user());
             $userAuthorization = $requestContext->getUserAuthorization();
         } catch (Exception $exception) {
             $userAuthorization = null;

@@ -17,6 +17,7 @@ use Hyperf\Odin\Api\Response\ChatCompletionChoice;
 use Hyperf\Odin\Api\Response\ChatCompletionResponse;
 use Hyperf\Odin\Api\Response\ChatCompletionStreamResponse;
 use Hyperf\Odin\Api\Response\EmbeddingResponse;
+use Hyperf\Odin\Message\AssistantMessage;
 
 class LLMAssembler
 {
@@ -57,14 +58,21 @@ class LLMAssembler
             'prompt_filter_results' => [],
         ], JSON_UNESCAPED_UNICODE) . "\n\n");
 
+        /** @var ChatCompletionChoice $choice */
         foreach ($chatCompletionStreamResponse->getStreamIterator() as $choice) {
+            $message = $choice->getMessage();
+            if ($message instanceof AssistantMessage && $message->hasToolCalls()) {
+                $delta = $message->toArrayWithStream();
+            } else {
+                $delta = $message->toArray();
+            }
             $data = [
                 'choices' => [
                     'content_filter_results' => [],
                     'finish_reason' => $choice->getFinishReason(),
                     'index' => $choice->getIndex(),
                     'logprobs' => $choice->getLogprobs(),
-                    'delta' => $choice->getMessage()->toArray(),
+                    'delta' => $delta,
                 ],
                 'created' => $chatCompletionStreamResponse->getCreated(),
                 'id' => $chatCompletionStreamResponse->getId(),
@@ -92,7 +100,7 @@ class LLMAssembler
         foreach ($modelEntities as $modelEntity) {
             $data = [
                 'id' => $modelEntity->getType(),
-                'object' => 'model',
+                'object' => $modelEntity->getObject(),
                 'created_at' => $modelEntity->getCreatedAt()->getTimestamp(),
                 'owner_by' => $modelEntity->getOwnerBy() ?: 'magic',
             ];

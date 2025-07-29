@@ -65,6 +65,13 @@ class MCPServerRepository extends MCPAbstractRepository implements MCPServerRepo
         return MCPServerFactory::createEntity($model);
     }
 
+    public function getOrgCodes(MCPDataIsolation $dataIsolation): array
+    {
+        $builder = $this->createBuilder($dataIsolation, MCPServerModel::query());
+
+        return $builder->distinct()->pluck('code')->toArray();
+    }
+
     /**
      * @return array{total: int, list: array<MCPServerEntity>}
      */
@@ -72,7 +79,10 @@ class MCPServerRepository extends MCPAbstractRepository implements MCPServerRepo
     {
         $builder = $this->createBuilder($dataIsolation, MCPServerModel::query());
 
-        if ($query->getCodes()) {
+        if (! is_null($query->getCodes())) {
+            if (empty($query->getCodes())) {
+                return ['total' => 0, 'list' => []];
+            }
             $builder->whereIn('code', $query->getCodes());
         }
 
@@ -88,12 +98,20 @@ class MCPServerRepository extends MCPAbstractRepository implements MCPServerRepo
             $builder->where('enabled', $query->getEnabled());
         }
 
+        if ($query->getWithToolCount()) {
+            $builder->withCount('tools');
+        }
+
         $result = $this->getByPage($builder, $page, $query);
 
         $list = [];
         /** @var MCPServerModel $model */
         foreach ($result['list'] as $model) {
-            $list[] = MCPServerFactory::createEntity($model);
+            $entity = MCPServerFactory::createEntity($model);
+            if ($model->getAttribute('tools_count')) {
+                $entity->setToolsCount($model->getAttribute('tools_count'));
+            }
+            $list[] = $entity;
         }
 
         return [

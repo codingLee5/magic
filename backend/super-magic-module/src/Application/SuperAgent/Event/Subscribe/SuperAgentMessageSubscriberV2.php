@@ -8,38 +8,50 @@ declare(strict_types=1);
 namespace Dtyq\SuperMagic\Application\SuperAgent\Event\Subscribe;
 
 use App\Application\Chat\Service\MagicAgentEventAppService;
+use App\Domain\Chat\DTO\Message\MagicMessageStruct;
+use App\Domain\Chat\DTO\Message\TextContentInterface;
 use App\Domain\Chat\Event\Agent\UserCallAgentEvent;
 use App\Domain\Chat\Service\MagicConversationDomainService;
 use App\Domain\Contact\Entity\ValueObject\DataIsolation;
+use App\Domain\MCP\Entity\ValueObject\MCPDataIsolation;
+use App\Interfaces\Chat\Assembler\SeqAssembler;
+use Dtyq\SuperMagic\Application\SuperAgent\DTO\UserMessageDTO;
+use Dtyq\SuperMagic\Application\SuperAgent\Service\HandleUserMessageAppService;
 use Dtyq\SuperMagic\Application\SuperAgent\Service\TaskAppService;
 use Dtyq\SuperMagic\Domain\SuperAgent\Constant\AgentConstant;
 use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\ChatInstruction;
 use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\TaskMode;
-use Hyperf\Contract\StdoutLoggerInterface;
+use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\TopicMode;
+use Hyperf\Logger\LoggerFactory;
+use Psr\Log\LoggerInterface;
 use Throwable;
 
 /**
- * 特殊智能体服务
+ * Super Agent Service.
  *
- * 负责根据 AI 代码处理智能体消息的发布
+ * Responsible for publishing agent messages based on AI code processing
  */
 class SuperAgentMessageSubscriberV2 extends MagicAgentEventAppService
 {
+    protected LoggerInterface $logger;
+
     public function __construct(
         protected readonly TaskAppService $SuperAgentAppService,
-        protected readonly StdoutLoggerInterface $logger,
+        protected readonly HandleUserMessageAppService $handleUserMessageAppService,
+        protected readonly LoggerFactory $loggerFactory,
         MagicConversationDomainService $magicConversationDomainService,
     ) {
+        $this->logger = $loggerFactory->get(get_class($this));
         parent::__construct($magicConversationDomainService);
     }
 
     public function agentExecEvent(UserCallAgentEvent $userCallAgentEvent)
     {
-        // 判断是否需要调用超级麦吉
+        // Determine if Super Magic needs to be called
         if ($userCallAgentEvent->agentAccountEntity->getAiCode() === AgentConstant::SUPER_MAGIC_CODE) {
             $this->handlerSuperMagicMessage($userCallAgentEvent);
         } else {
-            // 走普通的助理处理消息
+            // Process messages through normal agent handling
             parent::agentExecEvent($userCallAgentEvent);
         }
     }
@@ -47,26 +59,35 @@ class SuperAgentMessageSubscriberV2 extends MagicAgentEventAppService
     private function handlerSuperMagicMessage(UserCallAgentEvent $userCallAgentEvent): void
     {
         try {
-            $this->logger->debug(sprintf(
-                '接收到通用智能体消息，事件: %s',
+            $this->logger->info(sprintf(
+                'Received super agent message, event: %s',
                 json_encode($userCallAgentEvent, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
             ));
-
-            // 提取必要信息
+            /** @var null|MagicMessageStruct $messageStruct */
+            $messageStruct = $userCallAgentEvent->messageEntity?->getContent();
+            if ($messageStruct instanceof TextContentInterface) {
+                // 可能是富文本，需要处理 @
+                $prompt = $messageStruct->getTextContent();
+            } else {
+                $prompt = '';
+            }
+            // 更改附件的定义，附件是用户 @了 文件/mcp/agent 等
+            $superAgentExtra = $messageStruct->getExtra()?->getSuperAgent();
+            $mentions = $superAgentExtra?->getMentionsJsonStruct();
+            // Extract necessary information
             $conversationId = $userCallAgentEvent->seqEntity->getConversationId() ?? '';
             $chatTopicId = $userCallAgentEvent->seqEntity->getExtra()?->getTopicId() ?? '';
             $organizationCode = $userCallAgentEvent->senderUserEntity->getOrganizationCode() ?? '';
             $userId = $userCallAgentEvent->senderUserEntity->getUserId() ?? '';
             $agentUserId = $userCallAgentEvent->agentUserEntity->getUserId() ?? '';
-            $prompt = $userCallAgentEvent->messageEntity?->getMessageContent()?->getContent() ?? '';
-            $attachments = $userCallAgentEvent->messageEntity?->getMessageContent()?->getAttachments() ?? [];
-            $instructions = $userCallAgentEvent->messageEntity?->getMessageContent()?->getInstructs() ?? [];
+            $attachments = $userCallAgentEvent->messageEntity?->getContent()?->getAttachments() ?? [];
+            $instructions = $userCallAgentEvent->messageEntity?->getContent()?->getInstructs() ?? [];
 
-            // 参数验证
+            // Parameter validation
             if (empty($conversationId) || empty($chatTopicId) || empty($organizationCode)
                 || empty($userId) || empty($agentUserId)) {
                 $this->logger->error(sprintf(
-                    '消息参数不完整, conversation_id: %s, topic_id: %s, organization_code: %s, user_id: %s, agent_user_id: %s',
+                    'Incomplete message parameters, conversation_id: %s, topic_id: %s, organization_code: %s, user_id: %s, agent_user_id: %s',
                     $conversationId,
                     $chatTopicId,
                     $organizationCode,
@@ -76,50 +97,97 @@ class SuperAgentMessageSubscriberV2 extends MagicAgentEventAppService
                 return;
             }
 
-            // 创建数据隔离对象
+            // Create data isolation object
             $dataIsolation = DataIsolation::create($organizationCode, $userId);
 
-            // 将附件数组转为JSON
+            // Convert attachments array to JSON
             $attachmentsJson = ! empty($attachments) ? json_encode($attachments, JSON_UNESCAPED_UNICODE) : '';
 
-            // 解析指令信息
+            // Convert mentions array to JSON if not null
+            $mentionsJson = ! empty($mentions) ? json_encode($mentions, JSON_UNESCAPED_UNICODE) : null;
+
+            // Parse instruction information
             [$chatInstructs, $taskMode] = $this->parseInstructions($instructions);
 
-            // 初始化Agent任务
-            $taskId = $this->SuperAgentAppService->initAgentTask(
-                dataIsolation: $dataIsolation,
-                agentUserId: $agentUserId,
-                conversationId: $conversationId,
-                chatTopicId: $chatTopicId,
-                prompt: $prompt,
-                attachments: $attachmentsJson,
-                instruction: $chatInstructs,
-                taskMode: $taskMode
+            // Parse topic mode from super agent extra
+            $topicModeValue = $superAgentExtra?->getTopicPattern();
+            $topicMode = $topicModeValue ? TopicMode::tryFrom($topicModeValue) ?? TopicMode::GENERAL : TopicMode::GENERAL;
+
+            // raw content
+            $rawContent = $this->getRawContent($userCallAgentEvent);
+
+            // MCP config
+            $mcpDataIsolation = MCPDataIsolation::create(
+                $dataIsolation->getCurrentOrganizationCode(),
+                $dataIsolation->getCurrentUserId()
             );
 
-            $this->logger->info(sprintf('通用智能体任务已初始化，任务ID: %s', $taskId));
+            // Create user message DTO
+            $userMessageDTO = new UserMessageDTO(
+                agentUserId: $agentUserId,
+                chatConversationId: $conversationId,
+                chatTopicId: $chatTopicId,
+                topicId: (int) $chatTopicId,
+                prompt: $prompt,
+                attachments: $attachmentsJson,
+                mentions: $mentionsJson,
+                instruction: $chatInstructs,
+                topicMode: $topicMode,
+                taskMode: $taskMode,
+                rawContent: $rawContent,
+                mcpConfig: []
+            );
+
+            $taskContext = $this->handleUserMessageAppService->getTaskContext($dataIsolation, $userMessageDTO);
+            $mcpConfig = $this->supperMagicAgentMCP?->createChatMessageRequestMcpConfig($mcpDataIsolation, $taskContext) ?? [];
+            $userMessageDTO->setMcpConfig($mcpConfig);
+
+            // Call handle user message service
+            if ($chatInstructs == ChatInstruction::Interrupted) {
+                $this->handleUserMessageAppService->handleInternalMessage($dataIsolation, $userMessageDTO);
+            } else {
+                $this->handleUserMessageAppService->handleChatMessage($dataIsolation, $userMessageDTO);
+            }
+            $this->logger->info('Super agent message processing completed');
 
             return;
         } catch (Throwable $e) {
             $this->logger->error(sprintf(
-                '处理通用智能体消息失败: %s, event: %s',
+                'Failed to process super agent message: %s,file:%s,line:%s, event: %s,trace:%s',
                 $e->getMessage(),
-                json_encode($userCallAgentEvent, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                $e->getFile(),
+                $e->getLine(),
+                json_encode($userCallAgentEvent, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                $e->getTraceAsString()
             ));
 
-            return; // 即使出错也确认消息，避免消息堆积
+            return; // Acknowledge message even on error to avoid message accumulation
+        }
+    }
+
+    private function getRawContent(UserCallAgentEvent $userCallAgentEvent): string
+    {
+        $seqObject = SeqAssembler::getClientSeqStruct($userCallAgentEvent->seqEntity, $userCallAgentEvent->messageEntity);
+        try {
+            $type = $seqObject->getSeq()->getMessage()->getType() ?? 'undefined';
+            $data = [
+                'type' => $type, $type => $seqObject->getSeq()->getMessage()->getContent(),
+            ];
+            return json_encode($data, JSON_UNESCAPED_UNICODE);
+        } catch (Throwable $e) {
+            return '';
         }
     }
 
     /**
-     * 解析指令，提取聊天指令和任务模式.
+     * Parse instructions, extract chat instruction and task mode.
      *
-     * @param array $instructions 指令数组
-     * @return array 返回 [ChatInstruction, string taskMode]
+     * @param array $instructions Instruction array
+     * @return array Returns [ChatInstruction, string taskMode]
      */
     private function parseInstructions(array $instructions): array
     {
-        // 默认值
+        // Default values
         $chatInstructs = ChatInstruction::Normal;
         $taskMode = '';
 
@@ -127,22 +195,22 @@ class SuperAgentMessageSubscriberV2 extends MagicAgentEventAppService
             return [$chatInstructs, $taskMode];
         }
 
-        // 检查是否有匹配的聊天指令或任务模式
+        // Check for matching chat instructions or task modes
         foreach ($instructions as $instruction) {
             $value = $instruction['value'] ?? '';
 
-            // 先尝试匹配聊天指令
+            // First try to match chat instruction
             $tempChatInstruct = ChatInstruction::tryFrom($value);
             if ($tempChatInstruct !== null) {
                 $chatInstructs = $tempChatInstruct;
-                continue; // 找到聊天指令后继续找任务模式
+                continue; // Continue looking for task mode after finding chat instruction
             }
 
-            // 尝试匹配任务模式
+            // Try to match task mode
             $tempTaskMode = TaskMode::tryFrom($value);
             if ($tempTaskMode !== null) {
                 $taskMode = $tempTaskMode->value;
-                break; // 找到任务模式后可以结束循环
+                break; // Can end loop after finding task mode
             }
         }
         return [$chatInstructs, $taskMode];

@@ -163,13 +163,17 @@ readonly class OperationPermissionDomainService
     {
         $contactDataIsolation = ContactDataIsolation::simpleMake($dataIsolation->getCurrentOrganizationCode(), $dataIsolation->getCurrentUserId());
         // 获取用户所在部门、群组添加到 target 中查找
-        $userDepartmentList = $this->departmentUserRepository->getDepartmentIdsByUserIds($contactDataIsolation, $userIds);
+        $userDepartmentList = $this->departmentUserRepository->getDepartmentIdsByUserIds($contactDataIsolation, $userIds, true);
         $userGroupIds = $this->magicGroupRepository->getGroupIdsByUserIds($userIds);
 
         $targetIds = $userIds;
 
-        foreach ($userDepartmentList as $departmentIds) {
+        $departmentUserIds = [];
+        foreach ($userDepartmentList as $userId => $departmentIds) {
             $targetIds = array_merge($targetIds, $departmentIds);
+            foreach ($departmentIds as $departmentId) {
+                $departmentUserIds[$departmentId][] = $userId;
+            }
         }
 
         $groupUserIds = [];
@@ -193,6 +197,14 @@ readonly class OperationPermissionDomainService
             }
             if ($resourcesOperationPermission->getTargetType() === TargetType::GroupId) {
                 foreach ($groupUserIds[$resourcesOperationPermission->getTargetId()] ?? [] as $userId) {
+                    $topOperation = $list[$userId][$resourcesOperationPermission->getResourceId()] ?? null;
+                    if ($resourcesOperationPermission->getOperation()->gt($topOperation)) {
+                        $list[$userId][$resourcesOperationPermission->getResourceId()] = $resourcesOperationPermission->getOperation();
+                    }
+                }
+            }
+            if ($resourcesOperationPermission->getTargetType() === TargetType::DepartmentId) {
+                foreach ($departmentUserIds[$resourcesOperationPermission->getTargetId()] ?? [] as $userId) {
                     $topOperation = $list[$userId][$resourcesOperationPermission->getResourceId()] ?? null;
                     if ($resourcesOperationPermission->getOperation()->gt($topOperation)) {
                         $list[$userId][$resourcesOperationPermission->getResourceId()] = $resourcesOperationPermission->getOperation();

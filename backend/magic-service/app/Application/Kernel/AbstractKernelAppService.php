@@ -8,7 +8,9 @@ declare(strict_types=1);
 namespace App\Application\Kernel;
 
 use App\Application\Flow\ExecuteManager\ExecutionData\Operator;
+use App\Application\Permission\Service\OperationPermissionAppService;
 use App\Domain\Admin\Entity\ValueObject\AdminDataIsolation;
+use App\Domain\Agent\Entity\ValueObject\AgentDataIsolation;
 use App\Domain\Authentication\Entity\ValueObject\AuthenticationDataIsolation;
 use App\Domain\Contact\Entity\MagicUserEntity;
 use App\Domain\Contact\Entity\ValueObject\DataIsolation as ContactDataIsolation;
@@ -18,9 +20,12 @@ use App\Domain\Flow\Entity\ValueObject\FlowDataIsolation;
 use App\Domain\KnowledgeBase\Entity\ValueObject\KnowledgeBaseDataIsolation;
 use App\Domain\MCP\Entity\ValueObject\MCPDataIsolation;
 use App\Domain\ModelGateway\Entity\ValueObject\LLMDataIsolation;
+use App\Domain\Permission\Entity\ValueObject\OperationPermission\Operation;
+use App\Domain\Permission\Entity\ValueObject\OperationPermission\ResourceType;
 use App\Domain\Permission\Entity\ValueObject\PermissionDataIsolation;
 use App\Domain\Provider\Entity\ValueObject\ProviderDataIsolation;
 use App\ErrorCode\GenericErrorCode;
+use App\Infrastructure\Core\Collector\BuiltInToolSet\BuiltInToolSetCollector;
 use App\Infrastructure\Core\DataIsolation\BaseDataIsolation;
 use App\Infrastructure\Core\DataIsolation\HandleDataIsolationInterface;
 use App\Infrastructure\Core\Exception\ExceptionBuilder;
@@ -149,6 +154,17 @@ abstract class AbstractKernelAppService
         return $dataIsolation;
     }
 
+    protected function createAgentDataIsolation(Authenticatable|BaseDataIsolation $authorization): AgentDataIsolation
+    {
+        $dataIsolation = new AgentDataIsolation();
+        if ($authorization instanceof BaseDataIsolation) {
+            $dataIsolation->extends($authorization);
+            return $dataIsolation;
+        }
+        $this->handleByAuthorization($authorization, $dataIsolation);
+        return $dataIsolation;
+    }
+
     protected static function createFlowDataIsolationStaticMethod(Authenticatable|BaseDataIsolation $authorization): FlowDataIsolation
     {
         $dataIsolation = new FlowDataIsolation();
@@ -209,6 +225,41 @@ abstract class AbstractKernelAppService
         $handleDataIsolation = di(HandleDataIsolationInterface::class);
         $handleDataIsolation->handleByAuthorization($authorization, $baseDataIsolation, $envId);
         EnvManager::initDataIsolationEnv($baseDataIsolation, $envId);
+    }
+
+    protected function getMCPServerOperation(BaseDataIsolation $dataIsolation, int|string $code): Operation
+    {
+        if (empty($code)) {
+            return Operation::None;
+        }
+        // 如果是官方组织下，mcp 的所有人都是管理权限
+        if ($dataIsolation->isOfficialOrganization()) {
+            return Operation::Admin;
+        }
+        $permissionDataIsolation = $this->createPermissionDataIsolation($dataIsolation);
+        return di(OperationPermissionAppService::class)->getOperationByResourceAndUser(
+            $permissionDataIsolation,
+            ResourceType::MCPServer,
+            (string) $code,
+            $permissionDataIsolation->getCurrentUserId()
+        );
+    }
+
+    protected function getToolSetOperation(BaseDataIsolation $dataIsolation, int|string $code): Operation
+    {
+        if (empty($code)) {
+            return Operation::None;
+        }
+        if (BuiltInToolSetCollector::isBuiltInToolSet($code)) {
+            return Operation::Read;
+        }
+        $permissionDataIsolation = $this->createPermissionDataIsolation($dataIsolation);
+        return di(OperationPermissionAppService::class)->getOperationByResourceAndUser(
+            $permissionDataIsolation,
+            ResourceType::ToolSet,
+            (string) $code,
+            $permissionDataIsolation->getCurrentUserId()
+        );
     }
 
     private static function handleByAuthorizationStaticMethod(Authenticatable $authorization, BaseDataIsolation $baseDataIsolation): void

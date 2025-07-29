@@ -9,22 +9,27 @@ namespace Dtyq\SuperMagic\Domain\SuperAgent\Event;
 
 use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\MessageMetadata;
 use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\MessagePayload;
+use Dtyq\SuperMagic\Domain\SuperAgent\Entity\ValueObject\TokenUsageDetails;
 
 /**
  * 话题任务消息事件.
  */
-class TopicTaskMessageEvent
+class TopicTaskMessageEvent extends AbstractEvent
 {
     /**
      * 构造函数.
      *
      * @param MessageMetadata $metadata 消息元数据
      * @param MessagePayload $payload 消息负载
+     * @param null|TokenUsageDetails $tokenUsageDetails Token 使用详情
      */
     public function __construct(
         private MessageMetadata $metadata,
-        private MessagePayload $payload
+        private MessagePayload $payload,
+        private ?TokenUsageDetails $tokenUsageDetails = null,
     ) {
+        // Call parent constructor to generate snowflake ID
+        parent::__construct();
     }
 
     /**
@@ -42,7 +47,11 @@ class TopicTaskMessageEvent
             ? MessagePayload::fromArray($data['payload'])
             : new MessagePayload();
 
-        return new self($metadata, $payload);
+        $tokenUsageDetails = isset($data['token_usage_details']) && is_array($data['token_usage_details'])
+            ? TokenUsageDetails::fromArray($data['token_usage_details'])
+            : null;
+
+        return new self($metadata, $payload, $tokenUsageDetails);
     }
 
     /**
@@ -55,6 +64,7 @@ class TopicTaskMessageEvent
         return [
             'metadata' => $this->metadata->toArray(),
             'payload' => $this->payload->toArray(),
+            'token_usage_details' => $this->tokenUsageDetails?->toArray(),
         ];
     }
 
@@ -72,5 +82,10 @@ class TopicTaskMessageEvent
     public function getPayload(): MessagePayload
     {
         return $this->payload;
+    }
+
+    public function getTokenUsageDetails(): ?TokenUsageDetails
+    {
+        return $this->tokenUsageDetails;
     }
 }

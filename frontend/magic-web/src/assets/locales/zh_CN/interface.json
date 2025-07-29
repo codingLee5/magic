@@ -358,6 +358,7 @@
 		"filePreview": {
 			"notFoundFile": "未找到该文件",
 			"notSupport": "暂不支持预览",
+			"notSupportFileType": "暂不支持该文件类型",
 			"title": "文件预览"
 		},
 		"floatButton": {
@@ -1003,7 +1004,7 @@
 		},
 		"appAuth": "应用授权",
 		"changeInfo": "修改信息",
-		"emptyTips": "暂未添加任何${title}",
+		"emptyTips": "暂未添加任何{{title}}",
 		"flow": "流程",
 		"flowInput": "流程入参",
 		"hasToolsNum": "包含 ${num} 个工具",
@@ -1123,7 +1124,9 @@
 			"NotSupport": "暂不支持",
 			"groupDisbanded": {
 				"content": "该群已解散"
-			}
+			},
+			"loadingMoreMessages": "加载更多消息...",
+			"switchingConversation": "切换会话中..."
 		},
 		"drive": {
 			"modal": {}
@@ -1331,6 +1334,14 @@
 	"workspaces": {
 		"alwayUsedApplication": "常用应用",
 		"collapse": "收起",
-		"noCollapse": "展开"
+		"noCollapse": "展开余下"
+	},
+	"markdownTable": {
+		"showMore": "详情",
+		"rowDetails": "行详细信息",
+		"clickToExpand": "点击展开完整内容",
+		"showAllColumns": "显示全部",
+		"hideAllColumns": "隐藏",
+		"defaultColumn": "列"
 	}
 }

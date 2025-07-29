@@ -89,6 +89,7 @@ class MagicFlowAppService extends AbstractFlowAppService
         );
 
         $operator = $this->createExecutionOperator($authorization);
+        $operator->setSourceId('single_debug');
         $conversationId = ConversationId::SingleDebugNode->gen($authorization->getId() . '_' . $node->getNodeId());
         $executionData = new ExecutionData(
             flowDataIsolation: $this->createFlowDataIsolation($authorization),
@@ -352,6 +353,7 @@ class MagicFlowAppService extends AbstractFlowAppService
             }
             $toolInfo = [
                 'code' => $tool->getCode(),
+                'version_code' => $tool->getVersionCode(),
                 'name' => $tool->getName(),
                 'description' => $tool->getDescription(),
             ];
@@ -406,6 +408,7 @@ class MagicFlowAppService extends AbstractFlowAppService
             } else {
                 $knowledge->setUserOperation(($resources[$knowledge->getCode()] ?? Operation::None)->value);
             }
+            $knowledge->setSourceType($this->knowledgeBaseStrategy->getOrCreateDefaultSourceType($knowledge));
         }
         $knowledgeData['users'] = $this->magicUserDomainService->getByUserIds($this->createContactDataIsolation($dataIsolation), $userIds);
 

@@ -12,11 +12,9 @@ use App\Domain\Chat\DTO\Message\ControlMessage\AddFriendMessage;
 use App\Domain\Chat\DTO\Request\Common\ControlRequestData;
 use App\Domain\Chat\Entity\MagicMessageEntity;
 use App\Domain\Chat\Entity\MagicSeqEntity;
-use App\Domain\Chat\Entity\ValueObject\ChatSocketIoNameSpace;
 use App\Domain\Chat\Entity\ValueObject\ConversationType;
 use App\Domain\Chat\Entity\ValueObject\MessageType\ChatMessageType;
 use App\Domain\Chat\Entity\ValueObject\MessageType\ControlMessageType;
-use App\Domain\Chat\Entity\ValueObject\SocketEventType;
 use App\Domain\Chat\Event\Agent\UserCallAgentEvent;
 use App\Domain\Chat\Event\Agent\UserCallAgentFailEvent;
 use App\Domain\Contact\Entity\AccountEntity;
@@ -27,6 +25,7 @@ use App\ErrorCode\ChatErrorCode;
 use App\Infrastructure\Core\Exception\ExceptionBuilder;
 use App\Infrastructure\Util\Context\CoContext;
 use App\Infrastructure\Util\IdGenerator\IdGenerator;
+use App\Infrastructure\Util\SocketIO\SocketIOUtil;
 use App\Interfaces\Authorization\Web\MagicUserAuthorization;
 use App\Interfaces\Chat\Assembler\SeqAssembler;
 use Hyperf\Codec\Json;
@@ -88,14 +87,10 @@ class MagicSeqDomainService extends AbstractDomainService
      */
     public function pushControlSeq(MagicSeqEntity $seqEntity, MagicUserEntity $seqUserEntity, ?MagicMessageEntity $messageEntity = null): void
     {
-        $socketEventType = $this->getSocketEventType($seqEntity);
         // 有些控制消息,不仅控制自己的设备,还需要控制对方的设备
         // 控制消息推送. todo:待优化,合并推送已读的控制消息
         if ($seqEntity->getObjectType() === ConversationType::User && ($seqEntity->getSeqType() instanceof ControlMessageType)) {
-            $this->socketIO->of(ChatSocketIoNameSpace::Im->value)->to($seqUserEntity->getMagicId())->emit(
-                $socketEventType->value,
-                SeqAssembler::getClientSeqStruct($seqEntity, $messageEntity)->toArray()
-            );
+            SocketIOUtil::sendSequenceId($seqEntity);
         }
 
         if ($seqEntity->getObjectType() === ConversationType::Ai && ($seqEntity->getSeqType() instanceof ControlMessageType)) {
@@ -139,7 +134,6 @@ class MagicSeqDomainService extends AbstractDomainService
             return;
         }
         $receiveConversationType = $selfSeqEntity->getObjectType();
-        $socketEventType = $this->getSocketEventType($selfSeqEntity);
         $magicId = $selfSeqEntity->getObjectId();
         switch ($receiveConversationType) {
             case ConversationType::Ai:
@@ -197,7 +191,7 @@ class MagicSeqDomainService extends AbstractDomainService
                     'message_type' => $pushData['seq']['message']['type'] ?? '',
                 ];
                 $this->logger->info(sprintf('messagePush to:"%s" pushData:"%s"', $magicId, Json::encode($pushLogData)));
-                $this->socketIO->of(ChatSocketIoNameSpace::Im->value)->to($magicId)->emit($socketEventType->value, $pushData);
+                SocketIOUtil::sendSequenceId($selfSeqEntity);
                 break;
             case ConversationType::Group:
                 throw new RuntimeException('To be implemented');
@@ -214,15 +208,52 @@ class MagicSeqDomainService extends AbstractDomainService
         }
     }
 
-    // 根据 magic_message_id 调用 getSeqListByMagicMessageId ， 获取收件方 seq_id 最小的一条记录
-    public function getMinSeqIdByMagicMessageId(string $magicMessageId): ?MagicSeqEntity
+    /**
+     * Get seq entity list by magic_message_id.
+     * A magic_message_id will create seq entities for both sender and receiver.
+     *
+     * @param string $magicMessageId The magic_message_id
+     * @return MagicSeqEntity[] Array of seq entities
+     */
+    public function getSeqEntitiesByMagicMessageId(string $magicMessageId): array
     {
-        $seqList = $this->magicSeqRepository->getSeqListByMagicMessageId($magicMessageId);
-        // 排序
-        usort($seqList, function ($a, $b) {
-            return $a['seq_id'] <=> $b['seq_id'];
-        });
-        return $seqList[0] ?? null;
+        if (empty($magicMessageId)) {
+            return [];
+        }
+
+        $seqList = $this->magicSeqRepository->getBothSeqListByMagicMessageId($magicMessageId);
+
+        $seqEntities = [];
+        foreach ($seqList as $seqData) {
+            $seqEntities[] = SeqAssembler::getSeqEntity($seqData);
+        }
+
+        return $seqEntities;
+    }
+
+    /**
+     * Get the minimum seq_id record for the same user (object_id) based on magic_message_id
+     * Used to find the original message when there are multiple edited versions.
+     */
+    public function getSelfMinSeqIdByMagicMessageId(MagicSeqEntity $magicSeqEntity): ?MagicSeqEntity
+    {
+        // Get all seq records with minimum seq_id for each user
+        $seqList = $this->magicSeqRepository->getMinSeqListByMagicMessageId($magicSeqEntity->getMagicMessageId());
+
+        if (empty($seqList)) {
+            return null;
+        }
+
+        // Find the record belonging to the same user (object_id)
+        $targetObjectId = $magicSeqEntity->getObjectId();
+        foreach ($seqList as $seqData) {
+            if ($seqData['object_id'] === $targetObjectId) {
+                // Convert array data to MagicSeqEntity object
+                return SeqAssembler::getSeqEntity($seqData);
+            }
+        }
+
+        return null;
     }
 
     private function setRequestId(string $appMsgId): void
@@ -307,12 +338,6 @@ class MagicSeqDomainService extends AbstractDomainService
 
         // 只有聊天消息和已读回执才触发flow
         $messageType = $messageEntity?->getMessageType();
-        $ignoreTypes = [
-            ChatMessageType::RecordingSummary,
-        ];
-        if (in_array($messageType, $ignoreTypes, true)) {
-            return;
-        }
         if ($messageType instanceof ChatMessageType || $seqEntity->canTriggerFlow()) {
             // 获取用户的真名
             $senderAccountEntity = $this->magicAccountRepository->getAccountInfoByMagicId($senderUserEntity->getMagicId());
@@ -354,16 +379,5 @@ class MagicSeqDomainService extends AbstractDomainService
                 }
             });
         }
-    }
-
-    private function getSocketEventType(MagicSeqEntity $seqEntity): SocketEventType
-    {
-        if ($seqEntity->getSeqType() instanceof ControlMessageType) {
-            $socketEventType = SocketEventType::Control;
-        } else {
-            // 聊天消息
-            $socketEventType = SocketEventType::Chat;
-        }
-        return $socketEventType;
     }
 }

@@ -60,7 +60,7 @@ class BaseDataIsolation implements DataIsolationInterface
         $this->currentOrganizationCode = $currentOrganizationCode;
         $this->currentUserId = $userId;
         $this->magicId = $magicId;
-        $this->thirdPlatformDataIsolationManager = di(ThirdPlatformDataIsolationManagerInterface::class);
+        $this->thirdPlatformDataIsolationManager = \Hyperf\Support\make(ThirdPlatformDataIsolationManagerInterface::class);
 
         if (config('office_organization')) {
             // 目前只有 1 个官方组织
@@ -95,7 +95,7 @@ class BaseDataIsolation implements DataIsolationInterface
 
         $this->thirdPlatformOrganizationCode = $parentDataIsolation->getThirdPlatformOrganizationCode();
         $this->thirdPlatformUserId = $parentDataIsolation->getThirdPlatformUserId();
-        $this->thirdPlatformDataIsolationManager->extends($this);
+        $this->thirdPlatformDataIsolationManager->extends($parentDataIsolation);
     }
 
     public function getOrganizationCodes(): array
@@ -126,7 +126,7 @@ class BaseDataIsolation implements DataIsolationInterface
 
     public function getCurrentUserId(): string
     {
-        return $this->currentUserId ?? '';
+        return $this->currentUserId;
     }
 
     public function isEnable(): bool
@@ -230,5 +230,10 @@ class BaseDataIsolation implements DataIsolationInterface
     public function setOfficialOrganizationCodes(array $officialOrganizationCodes): void
     {
         $this->officialOrganizationCodes = $officialOrganizationCodes;
+    }
+
+    public function isOfficialOrganization(): bool
+    {
+        return in_array($this->currentOrganizationCode, $this->officialOrganizationCodes, true);
     }
 }

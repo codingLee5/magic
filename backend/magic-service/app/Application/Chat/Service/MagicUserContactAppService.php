@@ -18,6 +18,7 @@ use App\Domain\Chat\Entity\ValueObject\PlatformRootDepartmentId;
 use App\Domain\Chat\Service\MagicChatDomainService;
 use App\Domain\Contact\DTO\FriendQueryDTO;
 use App\Domain\Contact\DTO\UserQueryDTO;
+use App\Domain\Contact\DTO\UserUpdateDTO;
 use App\Domain\Contact\Entity\MagicUserEntity;
 use App\Domain\Contact\Entity\ValueObject\AddFriendType;
 use App\Domain\Contact\Entity\ValueObject\DataIsolation;
@@ -25,6 +26,7 @@ use App\Domain\Contact\Entity\ValueObject\DepartmentOption;
 use App\Domain\Contact\Entity\ValueObject\UserOption;
 use App\Domain\Contact\Entity\ValueObject\UserQueryType;
 use App\Domain\Contact\Entity\ValueObject\UserType;
+use App\Domain\Contact\Service\Facade\MagicUserDomainExtendInterface;
 use App\Domain\Contact\Service\MagicAccountDomainService;
 use App\Domain\Contact\Service\MagicDepartmentDomainService;
 use App\Domain\Contact\Service\MagicDepartmentUserDomainService;
@@ -286,7 +288,31 @@ class MagicUserContactAppService extends AbstractAppService
         return $this->magicOrganizationEnvDomainService->getEnvironmentEntityByAuthorization($authorization);
     }
 
-    // 根据用户id查询用户信息
+    /**
+     * Get user details for all organizations under the account from authorization token.
+     *
+     * @param string $authorization Authorization token
+     * @param null|string $organizationCode Optional organization code to filter users
+     * @return array Paginated format consistent with existing queries interface
+     * @throws Throwable
+     */
+    public function getUsersDetailByAccountAuthorization(string $authorization, ?string $organizationCode = null): array
+    {
+        // Get user details list
+        $usersDetailDTOList = $this->userDomainService->getUsersDetailByAccountFromAuthorization($authorization, $organizationCode);
+
+        if (empty($usersDetailDTOList)) {
+            return PageListAssembler::pageByMysql([], 0, 0, 0);
+        }
+
+        // Note: Since this interface is not within RequestContextMiddleware, organization context cannot be obtained
+        // Therefore, avatar processing is not performed, and raw data is returned directly
+        // Avatar processing requires specific organization context and file service configuration
+
+        // Return paginated format consistent with existing interfaces
+        return PageListAssembler::pageByMysql($usersDetailDTOList, 0, 0, count($usersDetailDTOList));
+    }
+
     public function getByUserId(string $userId): ?MagicUserEntity
     {
         return $this->userDomainService->getByUserId($userId);
@@ -304,6 +330,27 @@ class MagicUserContactAppService extends AbstractAppService
             ExceptionBuilder::throw(ChatErrorCode::LOGIN_FAILED);
         }
         return $magicEnvironmentEntity;
+    }
+
+    /**
+     * 是否允许更新用户信息.
+     */
+    public function getUserUpdatePermission(MagicUserAuthorization $userAuthorization): array
+    {
+        $dataIsolation = $this->createDataIsolation($userAuthorization);
+        $userDomainExtendService = di(MagicUserDomainExtendInterface::class);
+        return $userDomainExtendService->getUserUpdatePermission($dataIsolation);
+    }
+
+    /**
+     * 更新用户信息.
+     */
+    public function updateUserInfo(MagicUserAuthorization $userAuthorization, UserUpdateDTO $userUpdateDTO): MagicUserEntity
+    {
+        $dataIsolation = $this->createDataIsolation($userAuthorization);
+        $userDomainExtendService = di(MagicUserDomainExtendInterface::class);
+        $userDomainExtendService->updateUserInfo($dataIsolation, $userUpdateDTO);
+        return $this->getByUserId($dataIsolation->getCurrentUserId());
     }
 
     /**

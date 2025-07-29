@@ -40,6 +40,7 @@ use App\ErrorCode\ChatErrorCode;
 use App\ErrorCode\UserErrorCode;
 use App\Infrastructure\Core\Exception\ExceptionBuilder;
 use App\Infrastructure\Util\IdGenerator\IdGenerator;
+use App\Infrastructure\Util\SocketIO\SocketIOUtil;
 use App\Interfaces\Chat\Assembler\MessageAssembler;
 use App\Interfaces\Chat\Assembler\PageListAssembler;
 use App\Interfaces\Chat\Assembler\SeqAssembler;
@@ -59,7 +60,7 @@ class MagicChatDomainService extends AbstractDomainService
     /**
      * 加入房间.
      */
-    public function login(string $accountId, Socket $socket): void
+    public function joinRoom(string $accountId, Socket $socket): void
     {
         $socket->join($accountId);
         $this->logger->info(__METHOD__ . sprintf(' login accountId:%s sid:%s', $accountId, $socket->getSid()));
@@ -273,8 +274,8 @@ class MagicChatDomainService extends AbstractDomainService
         $receiveConversationId = $receiveConversationEntity->getId();
         $receiveUserEntity = $this->getUserInfo($messageEntity->getReceiveId());
         // 由于一条消息,在2个会话窗口渲染时,会生成2个消息id,因此需要解析出来收件方能看到的消息引用的id.
-        $receiverSeqList = $this->getReceiverReferMessageId($senderSeqEntity);
-        $receiverReferMessageId = $receiverSeqList[$receiveUserEntity->getMagicId()] ?? '';
+        $minSeqListByReferMessageId = $this->getMinSeqListByReferMessageId($senderSeqEntity);
+        $receiverReferMessageId = $minSeqListByReferMessageId[$receiveUserEntity->getMagicId()] ?? '';
         $seqId = (string) IdGenerator::getSnowId();
         // 节约存储空间,聊天消息在seq表不存具体内容,只存消息id
         $content = $this->getSeqContent($messageEntity);
@@ -477,7 +478,7 @@ class MagicChatDomainService extends AbstractDomainService
             $senderUserId = $messageEntity->getSenderId();
             unset($groupUsers[$senderUserId]);
             // 获取成员的magic_id
-            $userIds = array_values(array_keys($groupUsers));
+            $userIds = array_keys($groupUsers);
             $users = $this->magicUserRepository->getUserByIds($userIds);
             $users = array_column($users, null, 'user_id');
             // 批量获取群成员的会话信息
@@ -486,7 +487,7 @@ class MagicChatDomainService extends AbstractDomainService
             // 找到被隐藏的会话，更改状态
             $this->handlerGroupReceiverConversation($groupUserConversations);
             // 这条消息是否有引用其他消息
-            $magicMessageSeqList = $this->getReceiverReferMessageId($senderSeqEntity);
+            $minSeqListByReferMessageId = $this->getMinSeqListByReferMessageId($senderSeqEntity);
             // 给这些群成员批量生成聊天消息的 seq. 对于万人群,应该每批一千条seq.
             $seqListCreateDTO = [];
             foreach ($groupUsers as $groupUser) {
@@ -514,7 +515,7 @@ class MagicChatDomainService extends AbstractDomainService
                 }
                 // 多个参数都放在DTO里处理
                 $receiveSeqDTO = clone $senderSeqEntity;
-                $receiveSeqDTO->setReferMessageId($magicMessageSeqList[$user['magic_id']] ?? '');
+                $receiveSeqDTO->setReferMessageId($minSeqListByReferMessageId[$user['magic_id']] ?? '');
                 // 根据发件方的 seq,为群聊的每个成员生成 seq
                 $seqEntity = $this->generateGroupSeqEntityByChatSeq(
                     $user,
@@ -779,7 +780,7 @@ class MagicChatDomainService extends AbstractDomainService
                     // 先把第一个版本的消息存入 message_version 表
                     $this->magicChatMessageVersionsRepository->createMessageVersion($messageVersionEntity);
                     // 初次编辑时，更新收发双发的消息初始 seq，标记消息已编辑，方便前端渲染
-                    $seqList = $this->magicSeqRepository->getSeqListByMagicMessageId($messageEntity->getMagicMessageId());
+                    $seqList = $this->magicSeqRepository->getBothSeqListByMagicMessageId($messageEntity->getMagicMessageId());
                     foreach ($seqList as $seqData) {
                         $extra = $seqData['extra'] ?? null;
                         if (json_validate($extra)) {
@@ -930,12 +931,6 @@ class MagicChatDomainService extends AbstractDomainService
             $this->createTopicMessage($senderSeqEntity);
             // 收件方的话题消息
             $this->createTopicMessage($receiveSeqEntity);
-            // 前端渲染需要：如果是流式开始时，推一个普通 seq 给前端，用于渲染占位
-            $receiveData = SeqAssembler::getClientSeqStruct($receiveSeqEntity, $messageEntity)->toArray();
-            $this->socketIO->of(ChatSocketIoNameSpace::Im->value)
-                ->to($receiveSeqEntity->getObjectId())
-                ->compress(true)
-                ->emit(SocketEventType::Chat->value, $receiveData);
             // 缓存流式消息
             $cachedStreamMessageKey = $this->getStreamMessageCacheKey($createStreamSeqDTO->getAppMessageId());
             $jsonStreamCachedDTO = (new JsonStreamCachedDTO())
@@ -952,6 +947,8 @@ class MagicChatDomainService extends AbstractDomainService
             Db::rollBack();
             throw $exception;
         }
+        // 前端渲染需要：如果是流式开始时，推一个普通 seq 给前端，用于渲染占位，但是 seq_id 并没有落库。
+        SocketIOUtil::sendSequenceId($receiveSeqEntity);
         return $senderSeqEntity;
     }
 

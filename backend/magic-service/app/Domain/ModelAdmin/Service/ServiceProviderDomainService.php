@@ -462,10 +462,9 @@ class ServiceProviderDomainService
     /**
      * 初始化组织的服务商信息
      * 当新加入一个组织后，初始化该组织的服务商和模型配置.
-     * @return ServiceProviderConfigDTO[] 初始化后的服务商配置列表
      * @throws LockException
      */
-    public function initOrganizationServiceProviders(string $organizationCode, ?ServiceProviderCategory $serviceProviderCategory = null): array
+    public function initOrganizationServiceProviders(string $organizationCode, ?ServiceProviderCategory $serviceProviderCategory = null)
     {
         $lockKey = 'service_provider:init:' . $organizationCode;
         $userId = uniqid('service_provider'); // 使用唯一ID作为锁的拥有者
@@ -474,51 +473,22 @@ class ServiceProviderDomainService
         if (! $this->redisLocker->mutexLock($lockKey, $userId, 60)) {
             $this->logger->warning(sprintf('获取 initOrganizationServiceProviders 锁失败, organizationCode: %s', $organizationCode));
             // 获取锁失败，返回空结果，避免并发操作
-            return [];
+            return;
         }
 
         try {
             $this->logger->info(sprintf('获取 initOrganizationServiceProviders 锁成功, 开始执行初始化, organizationCode: %s', $organizationCode));
 
-            $result = [];
             Db::beginTransaction();
             try {
-                // 获取所有服务商（如果指定了类别，则只获取该类别的服务商）
-                $serviceProviders = $this->serviceProviderRepository->getAllByCategory(1, 1000, $serviceProviderCategory);
-                if (empty($serviceProviders)) {
-                    return [];
+                // Special handling: Initialize models for new organization's Magic service provider from all LLM service providers in official organization
+                if ($serviceProviderCategory === null || $serviceProviderCategory === ServiceProviderCategory::LLM) {
+                    $this->initMagicServiceProviderModels($organizationCode);
                 }
 
-                // 收集需要同步模型的服务商（官方和VLM类型）
-                $officialAndVlmProviders = [];
-                $serviceProviderMap = [];
-
-                foreach ($serviceProviders as $serviceProvider) {
-                    $serviceProviderMap[$serviceProvider->getId()] = $serviceProvider;
-                    // 收集需要同步模型的服务商（官方和VLM类型）
-                    $isOfficial = ServiceProviderType::from($serviceProvider->getProviderType()) === ServiceProviderType::OFFICIAL;
-                    if ($isOfficial || ServiceProviderCategory::from($serviceProvider->getCategory()) === ServiceProviderCategory::VLM) {
-                        $officialAndVlmProviders[] = $serviceProvider->getId();
-                    }
-                }
-
-                // 批量创建服务商配置
-                $configEntities = $this->batchCreateServiceProviderConfigs($serviceProviders, $organizationCode);
-
-                // 如果有官方或VLM服务商，批量同步它们的模型
-                if (! empty($officialAndVlmProviders)) {
-                    $this->batchSyncServiceProviderModels($officialAndVlmProviders, $organizationCode);
-                }
-
-                // 构建返回结果
-                foreach ($configEntities as $configEntity) {
-                    $serviceProviderId = $configEntity->getServiceProviderId();
-                    if (isset($serviceProviderMap[$serviceProviderId])) {
-                        $result[] = $this->buildServiceProviderConfigDTO(
-                            $serviceProviderMap[$serviceProviderId],
-                            $configEntity
-                        );
-                    }
+                // Special handling: Initialize models for new organization's VLM service providers from all VLM service providers in official organization
+                if ($serviceProviderCategory === null || $serviceProviderCategory === ServiceProviderCategory::VLM) {
+                    $this->initVLMServiceProviderModels($organizationCode);
                 }
 
                 Db::commit();
@@ -527,8 +497,6 @@ class ServiceProviderDomainService
                 Db::rollBack();
                 ExceptionBuilder::throw(ServiceProviderErrorCode::SystemError, __('service_provider.init_organization_providers_failed'));
             }
-
-            return $result;
         } finally {
             // 确保锁被释放
             $this->redisLocker->release($lockKey, $userId);
@@ -601,6 +569,7 @@ class ServiceProviderDomainService
                 $newModel = clone $baseModel;
                 $newModel->setServiceProviderConfigId($newConfigId);
                 $newModel->setOrganizationCode($orgCode);
+                $newModel->setModelParentId($baseModel->getId());
                 $modelsToSave[] = $newModel;
             }
         }
@@ -705,12 +674,15 @@ class ServiceProviderDomainService
             ExceptionBuilder::throw(ServiceProviderErrorCode::ModelNotActive);
         }
 
+        if ($serviceProviderModelEntity->getIsOffice()) {
+            // 获取父级的模型服务商 id
+            $serviceProviderConfigId = $this->getModelById((string) $serviceProviderModelEntity->getModelParentId())->getServiceProviderConfigId();
+        } else {
+            $serviceProviderConfigId = $serviceProviderModelEntity->getServiceProviderConfigId();
+        }
+
         // 3. 获取服务商配置
-        $serviceProviderConfigId = $serviceProviderModelEntity->getServiceProviderConfigId();
-        $serviceProviderConfigEntity = $this->serviceProviderConfigRepository->getByIdAndOrganizationCode(
-            (string) $serviceProviderConfigId,
-            $organizationCode
-        );
+        $serviceProviderConfigEntity = $this->serviceProviderConfigRepository->getById($serviceProviderConfigId);
 
         // 4. 获取服务商信息
         $serviceProviderId = $serviceProviderConfigEntity->getServiceProviderId();
@@ -747,8 +719,8 @@ class ServiceProviderDomainService
 
     /**
      * 返回模型和服务商都被激活了的接入点列表.
+     * 要判断 model_parent_id 的模型和服务商是否激活.
      * @return ServiceProviderModelsEntity[]
-     * @todo 要判断 model_parent_id 的模型和服务商是否激活？
      */
     public function getOrganizationActiveModelsByIdOrType(string $key, ?string $orgCode = null): array
     {
@@ -758,43 +730,24 @@ class ServiceProviderDomainService
             return [];
         }
 
-        // 提取所有模型的服务商配置ID
-        $configIds = [];
-        foreach ($models as $model) {
-            $configIds[] = $model->getServiceProviderConfigId();
-        }
-        $configIds = array_unique($configIds);
+        // 提取模型配置ID和父模型ID
+        $modelConfigIds = $this->extractModelConfigIds($models);
+        $parentModelIds = $this->extractParentModelIds($models);
 
-        // 批量查询服务商配置
-        $configEntities = $this->serviceProviderConfigRepository->getByIds($configIds);
-        if (empty($configEntities)) {
+        // 获取父模型数据和映射
+        $parentModelMap = $this->buildParentModelMap($parentModelIds);
+
+        // 合并所有需要查询的配置ID
+        $allConfigIds = $this->mergeAllConfigIds($modelConfigIds, $parentModelMap);
+
+        // 一次性批量查询所有服务商配置并过滤激活状态
+        $activeConfigMap = $this->getActiveConfigMap($allConfigIds);
+        if (empty($activeConfigMap)) {
             return [];
         }
 
-        // 创建服务商配置ID到配置实体的映射，同时提取服务商ID
-        $configMap = [];
-        foreach ($configEntities as $config) {
-            // 只保留活跃的服务商配置
-            if ($config->getStatus() === Status::ACTIVE->value) {
-                $configMap[$config->getId()] = $config;
-            }
-        }
-
-        if (empty($configMap)) {
-            return [];
-        }
-
-        // 最终筛选活跃的模型
-        $activeModels = [];
-        foreach ($models as $model) {
-            $configId = $model->getServiceProviderConfigId();
-            // 只检查服务商配置是否存在且活跃
-            if (isset($configMap[$configId])) {
-                $activeModels[] = $model;
-            }
-        }
-
-        return $activeModels;
+        // 筛选并处理最终的活跃模型（同时过滤父模型）
+        return $this->filterActiveModels($models, $activeConfigMap, $parentModelMap);
     }
 
     public function deleteServiceProviderForAdmin(string $serviceProviderConfigId, string $organizationCode): void
@@ -871,12 +824,12 @@ class ServiceProviderDomainService
             $serviceProviderConfigEntity->setStatus($serviceProviderConfigDTO->getStatus());
             $serviceProviderConfigEntity->setConfig($serviceProviderConfigDTO->getConfig());
             $serviceProviderConfigEntity = $this->serviceProviderConfigRepository->insert($serviceProviderConfigEntity);
+            Db::commit();
         } catch (Exception $exception) {
             Db::rollBack();
             $this->logger->error('添加服务商失败: ' . $exception->getMessage());
             ExceptionBuilder::throw(ServiceProviderErrorCode::SystemError, __('service_provider.add_provider_failed'));
         }
-        Db::commit();
         return $this->buildServiceProviderConfigDTO($serviceProviderEntity, $serviceProviderConfigEntity);
     }
 
@@ -914,12 +867,12 @@ class ServiceProviderDomainService
                 // 删除服务商下所有的模型
                 $this->serviceProviderModelsRepository->deleteByServiceProviderConfigId($serviceProviderConfigId, $organizationCode);
             }
+            Db::commit();
         } catch (Exception $exception) {
             Db::rollBack();
             $this->logger->error('删除服务商失败: ' . $exception->getMessage());
             ExceptionBuilder::throw(ServiceProviderErrorCode::SystemError, __('service_provider.delete_provider_failed'));
         }
-        Db::commit();
     }
 
     public function addModelIdForOrganization(string $modelId, string $organizationCode): void
@@ -1067,6 +1020,29 @@ class ServiceProviderDomainService
         });
     }
 
+    /**
+     * 根据可见应用过滤模型.
+     *
+     * @param $serviceProviderModels ServiceProviderModelsDTO[] 服务提供商模型数组
+     * @param string $currentApplicationCode 当前应用代码
+     * @return array 过滤后的模型数组
+     */
+    public function filterModelsByVisibleApplications(array $serviceProviderModels, string $currentApplicationCode): array
+    {
+        return array_filter($serviceProviderModels, function ($model) use ($currentApplicationCode) {
+            // 获取模型的可见应用列表
+            $visibleApplications = $model->getVisibleApplications();
+
+            // 如果可见应用为空，则所有应用可见
+            if (empty($visibleApplications)) {
+                return true;
+            }
+
+            // 如果可见应用不为空，检查当前应用是否在可见应用列表中
+            return in_array($currentApplicationCode, $visibleApplications);
+        });
+    }
+
     public function maskString(string $value): string
     {
         if (empty($value)) {
@@ -1083,6 +1059,265 @@ class ServiceProviderDomainService
         $middleLength = $length - 6; // 减去前三位和后三位
         $maskedMiddle = str_repeat('*', $middleLength);
         return $prefix . $maskedMiddle . $suffix;
+    }
+
+    /**
+     * @return ServiceProviderModelsEntity[]
+     */
+    public function getOfficeModels(ServiceProviderCategory $category): array
+    {
+        $serviceProviderEntities = $this->serviceProviderRepository->getByCategory($category);
+        $serviceProviderConfigEntities = $this->serviceProviderConfigRepository->getsByServiceProviderIdsAndOffice(array_column($serviceProviderEntities, 'id'));
+        $serviceProviderConfigIds = array_column($serviceProviderConfigEntities, 'id');
+
+        return $this->serviceProviderModelsRepository->getActiveModelsByConfigIds($serviceProviderConfigIds);
+    }
+
+    /**
+     * 获取官方的激活模型配置（支持返回多个）.
+     * @param string $modelVersion 模型
+     * @return ServiceProviderConfig[] 服务商配置数组
+     */
+    public function getOfficeAndActiveModel(string $modelVersion, ServiceProviderCategory $category): array
+    {
+        $serviceProviderEntities = $this->serviceProviderRepository->getByCategory($category);
+        $serviceProviderConfigEntities = $this->serviceProviderConfigRepository->getsByServiceProviderIdsAndOffice(array_column($serviceProviderEntities, 'id'));
+
+        // 提取所有服务商配置ID
+        $serviceProviderConfigIds = array_column($serviceProviderConfigEntities, 'id');
+
+        // 根据服务商配置IDs、modelId和激活状态查找对应的模型（可能有多个）
+        $activeModels = $this->serviceProviderModelsRepository->getActiveModelsByConfigIdsAndModelVersion($serviceProviderConfigIds, $modelVersion);
+
+        if (empty($activeModels)) {
+            // 如果没有找到激活的模型，返回空数组
+            return [];
+        }
+
+        // 创建配置ID到配置实体的映射，便于快速查找
+        $configMap = [];
+        foreach ($serviceProviderConfigEntities as $configEntity) {
+            $configMap[$configEntity->getId()] = $configEntity;
+        }
+
+        // 收集所有匹配的服务商配置
+        $result = [];
+        foreach ($activeModels as $activeModel) {
+            $targetConfigId = $activeModel->getServiceProviderConfigId();
+            if (isset($configMap[$targetConfigId])) {
+                $config = $configMap[$targetConfigId]->getConfig();
+                if ($config) {
+                    $result[] = $config;
+                }
+            }
+        }
+
+        // 如果没有找到任何有效配置，返回空数组
+        return $result;
+    }
+
+    /**
+     * Get super magic display models and Magic provider models visible to current organization.
+     * @param string $organizationCode Organization code
+     * @return ServiceProviderModelsEntity[]
+     */
+    public function getSuperMagicDisplayModelsForOrganization(string $organizationCode): array
+    {
+        // 1. Get models with super magic display state enabled
+        $superMagicModels = $this->serviceProviderModelsRepository->getSuperMagicDisplayModelsForOrganization($organizationCode);
+
+        // 2. Get all models under Magic service provider for current organization
+        $magicServiceProvider = $this->serviceProviderRepository->getOfficial(ServiceProviderCategory::LLM);
+        if (! $magicServiceProvider) {
+            return $superMagicModels;
+        }
+
+        // Query service provider configurations by Magic service provider ID and current organization
+        $magicServiceProviderConfigs = $this->serviceProviderConfigRepository->getByServiceProviderIdsAndOrganizationCode(
+            [$magicServiceProvider->getId()],
+            $organizationCode
+        );
+
+        $magicModels = [];
+        foreach ($magicServiceProviderConfigs as $config) {
+            // Get all models under this service provider configuration (without status restriction)
+            $models = $this->serviceProviderModelsRepository->getModelStatusByServiceProviderConfigIdAndOrganizationCode(
+                (string) $config->getId(),
+                $organizationCode
+            );
+
+            // Add all models, filter by visible organizations later
+            foreach ($models as $model) {
+                $magicModels[] = $model;
+            }
+        }
+
+        // 3. Filter Magic provider models by visible organizations
+        $magicModelsEntities = [];
+        foreach ($magicModels as $model) {
+            $visibleOrganizations = $model->getVisibleOrganizations();
+
+            // Only return models when visible organizations is not empty and contains current organization
+            if (! empty($visibleOrganizations) && in_array($organizationCode, $visibleOrganizations)) {
+                $magicModelsEntities[] = $model;
+            }
+        }
+
+        // 4. Merge results and remove duplicates (by model ID)
+        $allModels = array_merge($superMagicModels, $magicModelsEntities);
+        $uniqueModels = [];
+        $modelIds = [];
+
+        foreach ($allModels as $model) {
+            if (! in_array($model->getId(), $modelIds)) {
+                $modelIds[] = $model->getId();
+                $uniqueModels[] = $model;
+            }
+        }
+
+        return $uniqueModels;
+    }
+
+    /**
+     * 提取模型的配置ID.
+     * @param ServiceProviderModelsEntity[] $models
+     * @return array 模型配置ID数组
+     */
+    private function extractModelConfigIds(array $models): array
+    {
+        $modelConfigIds = [];
+        foreach ($models as $model) {
+            $modelConfigIds[] = $model->getServiceProviderConfigId();
+        }
+        return array_unique($modelConfigIds);
+    }
+
+    /**
+     * 提取模型的父模型ID.
+     * @param ServiceProviderModelsEntity[] $models
+     * @return array 父模型ID数组
+     */
+    private function extractParentModelIds(array $models): array
+    {
+        $parentModelIds = [];
+        foreach ($models as $model) {
+            // 收集需要查询的 model_parent_id（重点是model_parent_id存在，且不等于 id）
+            $modelParentId = $model->getModelParentId();
+            if ($modelParentId > 0 && $modelParentId !== $model->getId()) {
+                $parentModelIds[] = $modelParentId;
+            }
+        }
+        return array_unique($parentModelIds);
+    }
+
+    /**
+     * 构建父模型映射.
+     * @return array 父模型ID到父模型实体的映射
+     */
+    private function buildParentModelMap(array $parentModelIds): array
+    {
+        if (empty($parentModelIds)) {
+            return [];
+        }
+
+        $parentModels = $this->serviceProviderModelsRepository->getModelsByIds($parentModelIds);
+
+        $parentModelMap = [];
+        foreach ($parentModels as $parentModel) {
+            $parentModelMap[$parentModel->getId()] = $parentModel;
+        }
+
+        return $parentModelMap;
+    }
+
+    /**
+     * 合并所有需要查询的配置ID.
+     * @param array $modelConfigIds 模型的配置ID
+     * @param array $parentModelMap 父模型映射
+     * @return array 所有需要查询的配置ID
+     */
+    private function mergeAllConfigIds(array $modelConfigIds, array $parentModelMap): array
+    {
+        $allConfigIds = $modelConfigIds;
+
+        // 添加父模型的配置ID
+        foreach ($parentModelMap as $parentModel) {
+            $allConfigIds[] = $parentModel->getServiceProviderConfigId();
+        }
+
+        return array_unique($allConfigIds);
+    }
+
+    /**
+     * 获取激活的配置映射.
+     * @return array 配置ID到配置实体的映射
+     */
+    private function getActiveConfigMap(array $configIds): array
+    {
+        if (empty($configIds)) {
+            return [];
+        }
+
+        $configEntities = $this->serviceProviderConfigRepository->getByIds($configIds);
+
+        $activeConfigMap = [];
+        foreach ($configEntities as $config) {
+            if ($config->getStatus() === Status::ACTIVE->value) {
+                $activeConfigMap[$config->getId()] = $config;
+            }
+        }
+
+        return $activeConfigMap;
+    }
+
+    /**
+     * 检查模型是否激活（模型状态和服务商配置都激活）.
+     */
+    private function isModelActive(ServiceProviderModelsEntity $model, array $configMap): bool
+    {
+        return $model->getStatus() === Status::ACTIVE->value
+            && isset($configMap[$model->getServiceProviderConfigId()]);
+    }
+
+    /**
+     * 筛选活跃的模型并处理父模型关系（同时过滤父模型的激活状态）.
+     * @param ServiceProviderModelsEntity[] $models
+     * @return ServiceProviderModelsEntity[]
+     */
+    private function filterActiveModels(array $models, array $activeConfigMap, array $parentModelMap): array
+    {
+        $activeModels = [];
+
+        foreach ($models as $model) {
+            // 检查当前模型的服务商配置是否激活
+            if (! isset($activeConfigMap[$model->getServiceProviderConfigId()])) {
+                continue;
+            }
+
+            $modelParentId = $model->getModelParentId();
+
+            // 处理有父模型关系的情况
+            if ($modelParentId > 0 && $modelParentId !== $model->getId()) {
+                // 检查父模型是否存在
+                if (! isset($parentModelMap[$modelParentId])) {
+                    continue;
+                }
+
+                // 检查父模型是否激活（模型状态和服务商配置都激活）
+                $parentModel = $parentModelMap[$modelParentId];
+                if (! $this->isModelActive($parentModel, $activeConfigMap)) {
+                    // 父模型不激活，跳过此模型
+                    continue;
+                }
+
+                // 还原接入点真实的ProviderConfigId（使用父模型的配置ID）
+                $model->setServiceProviderConfigId($parentModel->getServiceProviderConfigId());
+            }
+
+            $activeModels[] = $model;
+        }
+
+        return $activeModels;
     }
 
     private function syncUpdateModelsStatusByLLM(int $modelId, Status $status, ?DisabledByType $disabledBy = null)
@@ -1103,12 +1338,17 @@ class ServiceProviderDomainService
     /**
      * @param $models ServiceProviderModelsDTO[]
      */
-    private function buildServiceProviderConfigDTO(ServiceProviderEntity $serviceProviderEntity, ServiceProviderConfigEntity $serviceProviderConfigEntity, array $models = []): ServiceProviderConfigDTO
+    private function buildServiceProviderConfigDTO(ServiceProviderEntity $serviceProviderEntity, ServiceProviderConfigEntity $serviceProviderConfigEntity, array $models = [], ?string $applicationCode = null): ServiceProviderConfigDTO
     {
         $data = array_merge($serviceProviderConfigEntity->toArray(), $serviceProviderEntity->toArray());
         $serviceProviderConfigDTO = new ServiceProviderConfigDTO($data);
 
         $models = $this->filterModelsByVisibleOrganizations($models, $serviceProviderConfigEntity->getOrganizationCode());
+
+        // 如果提供了应用编码，则按应用可见性过滤 TODO xhy
+        if ($applicationCode !== null) {
+            $models = $this->filterModelsByVisibleApplications($models, $applicationCode);
+        }
 
         // 修改过滤逻辑
         $isOfficial = ServiceProviderType::from($serviceProviderEntity->getProviderType()) === ServiceProviderType::OFFICIAL;
@@ -1216,6 +1456,7 @@ class ServiceProviderDomainService
             }
 
             // 如果是官方服务商配置，先保存，如果没有找到非官方的再使用
+            /* @phpstan-ignore-next-line */
             if ($providerType === ServiceProviderType::OFFICIAL) {
                 $officialFound = true;
                 $officialProviderType = $providerType;
@@ -1303,6 +1544,20 @@ class ServiceProviderDomainService
             $apiKey = $config->getApiKey();
             if (! empty($apiKey)) {
                 $mergedConfig->setApiKey($apiKey);
+            }
+
+            $url = $config->getUrl();
+            if (! empty($url)) {
+                $mergedConfig->setUrl($url);
+            }
+
+            $apiVersion = $config->getApiVersion();
+            if (! empty($apiVersion)) {
+                $mergedConfig->setApiVersion($apiVersion);
+            }
+            $proxyUrl = $config->getProxyUrl();
+            if (! empty($proxyUrl)) {
+                $mergedConfig->setProxyUrl($proxyUrl);
             }
         }
 
@@ -1437,6 +1692,8 @@ class ServiceProviderDomainService
             $updateConsumerModel->setIcon($serviceProviderModelsEntity->getIcon());
             $updateConsumerModel->setTranslate($serviceProviderModelsEntity->getTranslate());
             $updateConsumerModel->setVisibleOrganizations($serviceProviderModelsEntity->getVisibleOrganizations());
+            $updateConsumerModel->setVisibleApplications($serviceProviderModelsEntity->getVisibleApplications());
+            $updateConsumerModel->setSuperMagicDisplayState($serviceProviderModelsEntity->getSuperMagicDisplayState());
             $modelParentId = $serviceProviderModelsEntity->getId();
             $this->serviceProviderModelsRepository->updateConsumerModel($modelParentId, $updateConsumerModel);
         }
@@ -1446,5 +1703,264 @@ class ServiceProviderDomainService
     {
         $officeOrganization = config('service_provider.office_organization');
         return $organizationCode === $officeOrganization;
+    }
+
+    /**
+     * Initialize models for new organization's Magic service provider
+     * Magic service provider's models come from all LLM type service providers in official organization.
+     *
+     * @param string $organizationCode New organization code
+     * @return bool Whether initialization is successful
+     */
+    private function initMagicServiceProviderModels(string $organizationCode): bool
+    {
+        // If it's official organization, no need to process
+        if ($this->isOfficial($organizationCode)) {
+            return true;
+        }
+
+        // 1. Get Magic official service provider
+        $magicServiceProvider = $this->serviceProviderRepository->getOfficial(ServiceProviderCategory::LLM);
+        if (! $magicServiceProvider) {
+            return false;
+        }
+
+        // 2. Ensure Magic service provider configuration exists for new organization
+        $newOrgConfigs = $this->serviceProviderConfigRepository->getByServiceProviderIdsAndOrganizationCode(
+            [$magicServiceProvider->getId()],
+            $organizationCode
+        );
+
+        // If Magic service provider configuration doesn't exist, create it
+        if (empty($newOrgConfigs)) {
+            $createdConfigs = $this->batchCreateServiceProviderConfigs([$magicServiceProvider], $organizationCode);
+            if (empty($createdConfigs)) {
+                return false;
+            }
+            $magicConfigId = $createdConfigs[0]->getId();
+        } else {
+            $magicConfigId = $newOrgConfigs[0]->getId();
+        }
+
+        // 3. Get all LLM type service provider configurations in official organization (exclude Magic itself)
+        $officeOrganization = config('service_provider.office_organization');
+        $officeLLMProviders = $this->serviceProviderRepository->getAllByCategory(1, 1000, ServiceProviderCategory::LLM);
+
+        $officeLLMProviderIds = [];
+        foreach ($officeLLMProviders as $provider) {
+            if ($provider->getProviderCode() === ServiceProviderCode::Magic->value) {
+                continue;
+            }
+            // Exclude Magic itself, only collect other LLM service providers
+            if ($provider->getId() !== $magicServiceProvider->getId()) {
+                $officeLLMProviderIds[] = $provider->getId();
+            }
+        }
+
+        if (empty($officeLLMProviderIds)) {
+            return true;
+        }
+
+        // 4. Get configurations of these LLM service providers in official organization
+        $officeConfigs = $this->serviceProviderConfigRepository->getByServiceProviderIdsAndOrganizationCode(
+            $officeLLMProviderIds,
+            $officeOrganization
+        );
+
+        if (empty($officeConfigs)) {
+            return true;
+        }
+
+        $officeConfigMap = [];
+        $officeConfigIds = [];
+        foreach ($officeConfigs as $config) {
+            $id = $config->getId();
+            $officeConfigIds[] = $id;
+            $officeConfigMap[$id] = $config->getStatus();
+        }
+
+        // 5. Get all models under these configurations
+        $allModels = $this->serviceProviderModelsRepository->getModelsByConfigIds($officeConfigIds);
+
+        if (empty($allModels)) {
+            return true;
+        }
+
+        // 6. Create model copies for new organization's Magic service provider
+        $modelsToSave = [];
+        foreach ($allModels as $baseModel) {
+            $newModel = clone $baseModel;
+            $newModel->setId(null);
+            $newModel->setServiceProviderConfigId($magicConfigId);
+            $newModel->setOrganizationCode($organizationCode);
+            $newModel->setIsOffice(true); // Mark as official model
+            $newModel->setModelParentId($baseModel->getId());
+
+            // Model is enabled only when both service provider and model are active; otherwise disabled
+            $bothActive = ($baseModel->getStatus() === Status::ACTIVE->value)
+                          && ($officeConfigMap[$baseModel->getServiceProviderConfigId()] === Status::ACTIVE->value);
+
+            $newModel->setStatus($bothActive ? Status::ACTIVE->value : Status::DISABLE->value);
+            $modelsToSave[] = $newModel;
+        }
+
+        // 7. Batch save models
+        $this->serviceProviderModelsRepository->batchSaveModels($modelsToSave);
+        $this->logger->info(sprintf('Initialized %d models for organization %s Magic service provider', count($modelsToSave), $organizationCode));
+
+        return true;
+    }
+
+    /**
+     * Initialize VLM service provider models for new organization
+     * VLM service provider models come from all VLM type service providers (exclude Magic) in official organization.
+     * Models will be copied to both Magic service provider and other VLM service providers.
+     *
+     * @param string $organizationCode New organization code
+     * @return bool Whether initialization is successful
+     */
+    private function initVLMServiceProviderModels(string $organizationCode): bool
+    {
+        // If it's official organization, no need to process
+        if ($this->isOfficial($organizationCode)) {
+            return true;
+        }
+
+        // 1. Get all VLM type service providers from official organization
+        $officeOrganization = config('service_provider.office_organization');
+        $allVLMProviders = $this->serviceProviderRepository->getAllByCategory(1, 1000, ServiceProviderCategory::VLM);
+
+        $officeVLMProviderIds = [];
+        $magicServiceProvider = null;
+        foreach ($allVLMProviders as $provider) {
+            if ($provider->getProviderCode() === ServiceProviderCode::Magic->value) {
+                $magicServiceProvider = $provider;
+            } else {
+                $officeVLMProviderIds[] = $provider->getId();
+            }
+        }
+
+        if (empty($officeVLMProviderIds) || ! $magicServiceProvider) {
+            return true;
+        }
+
+        // 2. Ensure all VLM service provider configurations exist for new organization
+        $allVLMProviderIds = array_merge($officeVLMProviderIds, [$magicServiceProvider->getId()]);
+        $existingConfigs = $this->serviceProviderConfigRepository->getByServiceProviderIdsAndOrganizationCode(
+            $allVLMProviderIds,
+            $organizationCode
+        );
+
+        // Create mapping of existing configurations
+        $existingConfigMap = [];
+        foreach ($existingConfigs as $config) {
+            $existingConfigMap[$config->getServiceProviderId()] = $config->getId();
+        }
+
+        // Create configurations for missing service providers
+        $missingProviders = [];
+        foreach ($allVLMProviders as $provider) {
+            if (! isset($existingConfigMap[$provider->getId()])) {
+                $missingProviders[] = $provider;
+            }
+        }
+
+        if (! empty($missingProviders)) {
+            $createdConfigs = $this->batchCreateServiceProviderConfigs($missingProviders, $organizationCode);
+            foreach ($createdConfigs as $config) {
+                $existingConfigMap[$config->getServiceProviderId()] = $config->getId();
+            }
+        }
+
+        // Get Magic service provider config ID
+        $magicConfigId = $existingConfigMap[$magicServiceProvider->getId()] ?? null;
+        if (! $magicConfigId) {
+            return false;
+        }
+
+        // Create mapping from service provider ID to config ID for current organization (excluding Magic)
+        $currentOrgConfigMap = [];
+        foreach ($officeVLMProviderIds as $providerId) {
+            if (isset($existingConfigMap[$providerId])) {
+                $currentOrgConfigMap[$providerId] = $existingConfigMap[$providerId];
+            }
+        }
+
+        // 3. Get configurations of these VLM service providers in official organization
+        $officeConfigs = $this->serviceProviderConfigRepository->getByServiceProviderIdsAndOrganizationCode(
+            $officeVLMProviderIds,
+            $officeOrganization
+        );
+
+        if (empty($officeConfigs)) {
+            return true;
+        }
+
+        $officeConfigMap = [];
+        $officeConfigIds = [];
+        foreach ($officeConfigs as $config) {
+            $id = $config->getId();
+            $officeConfigIds[] = $id;
+            $officeConfigMap[$id] = [
+                'status' => $config->getStatus(),
+                'service_provider_id' => $config->getServiceProviderId(),
+            ];
+        }
+
+        // 4. Get all models under these configurations
+        $allModels = $this->serviceProviderModelsRepository->getModelsByConfigIds($officeConfigIds);
+
+        if (empty($allModels)) {
+            return true;
+        }
+
+        $modelsToSave = [];
+
+        // 5. Create model copies for current organization's Magic service provider (with modelParentId)
+        foreach ($allModels as $baseModel) {
+            $newModel = clone $baseModel;
+            $newModel->setId(null);
+            $newModel->setServiceProviderConfigId($magicConfigId);
+            $newModel->setOrganizationCode($organizationCode);
+            $newModel->setIsOffice(true); // Mark as official model for Magic service provider
+            $newModel->setModelParentId($baseModel->getId());
+
+            // Model is enabled only when both service provider and model are active; otherwise disabled
+            $bothActive = ($baseModel->getStatus() === Status::ACTIVE->value)
+                          && ($officeConfigMap[$baseModel->getServiceProviderConfigId()]['status'] === Status::ACTIVE->value);
+
+            $newModel->setStatus($bothActive ? Status::ACTIVE->value : Status::DISABLE->value);
+            $modelsToSave[] = $newModel;
+        }
+
+        // 6. Create model copies for current organization's other VLM service providers (without modelParentId)
+        foreach ($allModels as $baseModel) {
+            $serviceProviderId = $officeConfigMap[$baseModel->getServiceProviderConfigId()]['service_provider_id'];
+
+            // Check if current organization has this service provider
+            if (! isset($currentOrgConfigMap[$serviceProviderId])) {
+                continue;
+            }
+
+            $newModel = clone $baseModel;
+            $newModel->setId(null);
+            $newModel->setServiceProviderConfigId($currentOrgConfigMap[$serviceProviderId]);
+            $newModel->setOrganizationCode($organizationCode);
+            $newModel->setIsOffice(false); // Mark as non-official model for other VLM service providers
+            $newModel->setModelParentId(0); // No parent model ID for other VLM service providers
+
+            // Model is enabled only when both service provider and model are active; otherwise disabled
+            $bothActive = ($baseModel->getStatus() === Status::ACTIVE->value)
+                          && ($officeConfigMap[$baseModel->getServiceProviderConfigId()]['status'] === Status::ACTIVE->value);
+
+            $newModel->setStatus($bothActive ? Status::ACTIVE->value : Status::DISABLE->value);
+            $modelsToSave[] = $newModel;
+        }
+
+        // 7. Batch save models
+        $this->serviceProviderModelsRepository->batchSaveModels($modelsToSave);
+        $this->logger->info(sprintf('Initialized %d VLM models for organization %s (Magic + other VLM providers)', count($modelsToSave), $organizationCode));
+
+        return true;
     }
 }

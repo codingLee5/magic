@@ -1,9 +1,8 @@
-import EnhanceMarkdown from "@/opensource/pages/chatNew/components/ChatMessageList/components/MessageFactory/components/Markdown/EnhanceMarkdown"
-import type { HTMLAttributes } from "react"
-import { memo } from "react"
+import { memo, type HTMLAttributes } from "react"
 import { createStyles } from "antd-style"
 import ReasoningContent from "./ReasoningContent"
 import streamLoadingIcon from "@/assets/resources/stream-loading-2.png"
+import EnhanceMarkdown from "./EnhanceMarkdown"
 
 interface MagicTextProps extends Omit<HTMLAttributes<HTMLDivElement>, "content"> {
 	content?: string
@@ -11,6 +10,7 @@ interface MagicTextProps extends Omit<HTMLAttributes<HTMLDivElement>, "content">
 	isSelf?: boolean
 	isStreaming?: boolean
 	isReasoningStreaming?: boolean
+	enableLatex?: boolean
 }
 
 const useStyles = createStyles(({ css }) => ({
@@ -26,12 +26,11 @@ const Markdown = memo(function Markdown({
 	isSelf,
 	isStreaming,
 	isReasoningStreaming,
+	enableLatex = true,
 }: MagicTextProps) {
-	// const { fontSize } = useChatFontSize()
-
 	const { styles, cx } = useStyles()
 
-	if (isReasoningStreaming || isStreaming) {
+	if (isStreaming || isReasoningStreaming) {
 		if (!reasoningContent && !content) {
 			return (
 				<img
@@ -53,6 +52,7 @@ const Markdown = memo(function Markdown({
 				className={cx(styles.container, className)}
 				isSelf={isSelf}
 				isStreaming={isStreaming}
+				enableLatex={enableLatex}
 			/>
 		</>
 	)

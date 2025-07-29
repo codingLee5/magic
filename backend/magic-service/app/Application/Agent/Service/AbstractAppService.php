@@ -9,6 +9,7 @@ namespace App\Application\Agent\Service;
 
 use App\Application\Kernel\AbstractKernelAppService;
 use App\Application\Permission\Service\OperationPermissionAppService;
+use App\Domain\Agent\Service\AgentDomainService;
 use App\Domain\Agent\Service\MagicAgentDomainService;
 use App\Domain\Agent\Service\MagicAgentVersionDomainService;
 use App\Domain\Agent\Service\MagicBotThirdPlatformChatDomainService;
@@ -46,7 +47,8 @@ abstract class AbstractAppService extends AbstractKernelAppService
         protected readonly MagicBotThirdPlatformChatDomainService $magicBotThirdPlatformChatDomainService,
         protected readonly MagicDepartmentDomainService $magicDepartmentDomainService,
         protected readonly MagicDepartmentUserDomainService $magicDepartmentUserDomainService,
-        readonly LoggerFactory $loggerFactory,
+        protected readonly AgentDomainService $agentDomainService,
+        public readonly LoggerFactory $loggerFactory,
     ) {
         $this->logger = $loggerFactory->get(get_class($this));
     }

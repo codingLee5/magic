@@ -9,6 +9,7 @@ namespace App\Domain\MCP\Repository\Persistence\Model;
 
 use App\Infrastructure\Core\AbstractModel;
 use DateTime;
+use Hyperf\Database\Model\Relations\HasMany;
 use Hyperf\Database\Model\SoftDeletes;
 use Hyperf\Snowflake\Concern\Snowflake;
 
@@ -21,6 +22,8 @@ use Hyperf\Snowflake\Concern\Snowflake;
  * @property string $icon MCP服务图标
  * @property string $type 服务类型 ('sse' 或 'stdio')
  * @property bool $enabled 是否启用
+ * @property string $external_sse_url 外部SSE服务URL
+ * @property null|array $service_config 服务配置
  * @property string $creator 创建者
  * @property DateTime $created_at 创建时间
  * @property string $modifier 修改者
@@ -42,6 +45,8 @@ class MCPServerModel extends AbstractModel
         'icon',
         'type',
         'enabled',
+        'external_sse_url',
+        'service_config',
         'creator',
         'created_at',
         'modifier',
@@ -57,9 +62,17 @@ class MCPServerModel extends AbstractModel
         'icon' => 'string',
         'type' => 'string',
         'enabled' => 'boolean',
+        'external_sse_url' => 'string',
+        'service_config' => 'array',
         'creator' => 'string',
         'modifier' => 'string',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];
+
+    public function tools(): HasMany
+    {
+        /* @phpstan-ignore-next-line */
+        return $this->hasMany(MCPServerToolModel::class, 'mcp_server_code', 'code');
+    }
 }

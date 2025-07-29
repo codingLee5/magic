@@ -2,10 +2,11 @@
 import type {
 	AIImagesMessage,
 	AggregateAISearchCardConversationMessage,
+	AggregateAISearchCardConversationMessageV2,
 	ConversationMessage,
 } from "@/types/chat/conversation_message"
 import {
-	AggregateAISearchCardDataType,
+	AggregateAISearchCardV2Status,
 	AIImagesDataType,
 	ConversationMessageStatus,
 	ConversationMessageType,
@@ -27,11 +28,12 @@ import chatTopicService from "@/opensource/services/chat/topic"
 import DotsService from "@/opensource/services/chat/dots/DotsService"
 import AiImageApplyService from "./AiImageApplyService"
 import AiSearchApplyService from "./AiSearchApplyService"
-import StreamMessageApplyService from "../StreamMessageApplyService"
-import type { ApplyMessageOptions } from "./types"
 import { bigNumCompare } from "@/utils/string"
 import OrganizationDotsStore from "@/opensource/stores/chatNew/dots/OrganizationDotsStore"
 import { userStore } from "@/opensource/models/user"
+import StreamMessageApplyServiceV2 from "../StreamMessageApplyServiceV2"
+import ConversationDbService from "../../../conversation/ConversationDbService"
+import { ApplyMessageOptions } from "@/types/chat/message"
 
 // 消息事件监听器类型
 type MessageEventListener = (message: SeqResponse<CMessage>, options?: ApplyMessageOptions) => void
@@ -111,6 +113,7 @@ class ChatMessageApplyService {
 			ConversationMessageType.Video,
 			ConversationMessageType.Voice,
 			ConversationMessageType.AggregateAISearchCard,
+			ConversationMessageType.AggregateAISearchCardV2,
 			ConversationMessageType.HDImage,
 			ConversationMessageType.AiImage,
 			ConversationMessageType.RecordingSummary,
@@ -133,14 +136,6 @@ class ChatMessageApplyService {
 			)
 		}
 
-		if (message.message.type === ConversationMessageType.AggregateAISearchCard) {
-			return (
-				(message as SeqResponse<AggregateAISearchCardConversationMessage>).message
-					.aggregate_ai_search_card?.type ===
-				AggregateAISearchCardDataType.SearchDeepLevel
-			)
-		}
-
 		return [
 			ConversationMessageType.Text,
 			ConversationMessageType.RichText,
@@ -151,6 +146,7 @@ class ChatMessageApplyService {
 			ConversationMessageType.Video,
 			ConversationMessageType.Voice,
 			ConversationMessageType.AggregateAISearchCard,
+			ConversationMessageType.AggregateAISearchCardV2,
 			ConversationMessageType.HDImage,
 			ConversationMessageType.AiImage,
 			ConversationMessageType.RecordingSummary,
@@ -172,16 +168,40 @@ class ChatMessageApplyService {
 		switch (message.message.type) {
 			case ConversationMessageType.Text:
 				pubsub.publish("super_magic_new_message", message)
-				StreamMessageApplyService.recordMessageInfo(
+				StreamMessageApplyServiceV2.recordMessageInfo(
 					message as SeqResponse<ConversationMessage>,
 				)
 				this.applyConversationMessage(message as SeqResponse<ConversationMessage>, options)
 				break
 			case ConversationMessageType.Markdown:
-				StreamMessageApplyService.recordMessageInfo(
+				StreamMessageApplyServiceV2.recordMessageInfo(
 					message as SeqResponse<ConversationMessage>,
 				)
 				this.applyConversationMessage(message as SeqResponse<ConversationMessage>, options)
+				break
+			case ConversationMessageType.AggregateAISearchCardV2:
+				console.log(`[apply] 处理AI搜索卡片V2消息, message:`, message)
+				StreamMessageApplyServiceV2.recordMessageInfo(
+					message as SeqResponse<ConversationMessage>,
+				)
+				console.log(
+					`[apply] 处理AI搜索卡片V2消息, message:`,
+					StreamMessageApplyServiceV2.queryMessageInfo(message.message_id),
+				)
+
+				const msg = message as SeqResponse<AggregateAISearchCardConversationMessageV2>
+				if (msg.message.aggregate_ai_search_card_v2?.status === undefined) {
+					// 初始化状态
+					msg.message.aggregate_ai_search_card_v2!.status =
+						AggregateAISearchCardV2Status.isSearching
+				}
+
+				this.applyConversationMessage(msg, options)
+
+				console.log(
+					`[apply] 处理AI搜索卡片V2消息, applied message:`,
+					MessageStore.messages.find((m) => m.message_id === message.message_id),
+				)
 				break
 			case ConversationMessageType.RichText:
 			case ConversationMessageType.MagicSearchCard:
@@ -229,7 +249,15 @@ class ChatMessageApplyService {
 
 		// 如果是 AI 会话，并且当前没有话题 Id，自动设置上
 		if (!conversation.current_topic_id && message.message.topic_id) {
-			ConversationService.switchTopic(message.conversation_id, message.message.topic_id)
+			conversation.setCurrentTopicId(message.message.topic_id ?? "")
+			ConversationDbService.updateConversation(message.conversation_id, {
+				current_topic_id: message.message.topic_id ?? "",
+			})
+
+			// 如果当前会话是当前会话，则切换话题
+			if (ConversationStore.currentConversation?.id === message.conversation_id) {
+				ConversationService.switchTopic(message.conversation_id, message.message.topic_id)
+			}
 		}
 
 		if (

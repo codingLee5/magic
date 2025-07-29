@@ -97,7 +97,7 @@ Alternatively, you can download the Git [GUI tool](https://git-scm.com/downloads
 
 ```bash
 # Create necessary network
-docker network create sandbox-network
+docker network create magic-sandbox-network
 
 # Start basic services
 docker compose up
@@ -124,9 +124,9 @@ The script will guide you through the following steps:
 - Choose 2 for remote server deployment (will detect public IP and ask if you want to use it)
 ![Deployment Method Selection](https://public-cdn.letsmagic.cn/static/img/chose_development_method.png)
 
-- Note: The script will check if sandbox-network has been created locally. If not, it will automatically execute:
+- Note: The script will check if magic-sandbox-network has been created locally. If not, it will automatically execute:
 ```bash
-docker network create sandbox-network
+docker network create magic-sandbox-network
 ```
 
 ###### Super Magic Service Installation
@@ -330,7 +330,7 @@ To uninstall Magic system:
 
 2. Remove Docker network (if needed)
    ```bash
-   docker network rm sandbox-network
+   docker network rm magic-sandbox-network
    ```
 
 3. Delete persistent file directory ./volumes
